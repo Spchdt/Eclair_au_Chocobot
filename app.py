@@ -1,4 +1,6 @@
 import os
+import uuid
+import json
 from fastapi import FastAPI, Request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -158,37 +160,48 @@ async def webhook_endpoint(request: Request):
     try:
         data = await request.json()
         
-        # Intercept Guest Summoning requests
-        if "guest_message" in data or ( "message" in data and "guest_query_id" in data["message"] ):
-            msg_data = data.get("guest_message", data.get("message", {}))
-            query_id = msg_data.get("guest_query_id") or data.get("update_id")
-            chat_id = msg_data.get("chat", {}).get("id")
-            text_prompt = msg_data.get("text", "")
+        # Intercept Guest Summoning updates (update.guest_message)
+        if "guest_message" in data:
+            guest_msg = data["guest_message"]
+            query_id = guest_msg.get("guest_query_id")
+            text_prompt = guest_msg.get("text", "")
 
-            # Scrub bot mentions out of the input string
-            clean_prompt = text_prompt.replace(f"@{telegram_app.bot.username}", "").strip()
+            # Scrub the bot's username mention out of the text prompt
+            bot_username = telegram_app.bot.username or ""
+            clean_prompt = text_prompt.replace(f"@{bot_username}", "").strip()
             
-            if clean_prompt and query_id and chat_id:
+            if clean_prompt and query_id:
+                # Ask Gemini for the answer
                 ai_reply = await process_with_gemini(clean_prompt)
                 
-                # Push back responses natively via standard raw endpoint query structures
+                # Format response as an InlineQueryResultArticle inside a JSON payload
+                inline_result = {
+                    "type": "article",
+                    "id": str(uuid.uuid4()),
+                    "title": "AI Response",
+                    "input_message_content": {
+                        "message_text": f"🤖 **Gemini:**\n\n{ai_reply}",
+                        "parse_mode": "Markdown"
+                    }
+                }
+                
+                # Send back response via answerGuestQuery endpoint
                 try:
                     await telegram_app.bot.custom_request(
                         method="post",
                         endpoint="answerGuestQuery",
                         data={
                             "guest_query_id": query_id,
-                            "chat_id": chat_id,
-                            "text": f"🤖 *Guest AI Response*:\n\n{ai_reply}",
-                            "parse_mode": "Markdown"
+                            "result": json.dumps(inline_result)
                         }
                     )
+                    print(f"Successfully answered Guest query ID: {query_id}")
                 except Exception as inner_e:
-                    # In case of older/modified wrapper integrations, fall back to direct messaging
-                    await telegram_app.bot.send_message(chat_id=chat_id, text=ai_reply)
+                    print(f"Error executing answerGuestQuery: {inner_e}")
+                
                 return {"status": "guest_processed"}
 
-        # Normal update message passing
+        # Fallback: Process normal message updates
         update = Update.de_json(data, telegram_app.bot)
         await telegram_app.process_update(update)
         
