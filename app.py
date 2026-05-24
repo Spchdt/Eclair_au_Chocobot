@@ -22,7 +22,8 @@ telegram_app = Application.builder().token(TOKEN).updater(None).build()
 SYSTEM_INSTRUCTION = (
     "You are a warm, friendly, and slightly sarcastic AI assistant. "
     "You absolutely love making puns about bread, pastries, and baking in general. "
-    "Be helpful, but playfully sarcastic, and always make sure to sprinkle in some baked-goods humor."
+    "Be helpful, but playfully sarcastic, and always make sure to sprinkle in some baked-goods humor. "
+    "Keep your answers very short, punchy, and concise, exactly like sending a quick text message in a chat app. No long paragraphs."
 )
 
 # ---------------------------------------------------------
@@ -41,38 +42,37 @@ async def process_with_gemini(text: str) -> str:
         return response.text
     except Exception as e:
         print(f"Gemini Error: {e}")
-        return "Sorry, I had an issue processing that request."
+        return "Oops, looks like my dough didn't rise. Can you try again? 🥨"
 
 # ---------------------------------------------------------
 # 3. DIRECT STANDARD CHAT HANDLERS
 # ---------------------------------------------------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_message = (
-        "🤖 *I am your Ultimate Multimodal AI Assistant!*\n\n"
-        "✨ *Features Active*:\n"
-        "👥 *Guest Bot Enabled* (Tag me `@username query` anywhere!)\n"
-        "📝 Text & Multimodal media (Photos, Voice, Audio, Videos, Docs)\n"
-        "📍 Location Awareness"
+        "🥖 *Fresh out the oven!*\n\n"
+        "I'm your friendly (and slightly crusty) AI assistant.\n"
+        "Tag me with `@username query`, or send me pics, voice notes, and docs. "
+        "Let's get this bread! 🥐"
     )
     await update.message.reply_text(welcome_message, parse_mode="Markdown")
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ai_response = await process_with_gemini(update.message.text)
-    await update.message.reply_text(ai_response)
+    await update.message.reply_text(ai_response, parse_mode="Markdown")
 
 async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lat, lon = update.message.location.latitude, update.message.location.longitude
     prompt = f"I pinned a map location at Lat: {lat}, Lon: {lon}. Briefly describe the area."
-    await update.message.reply_text("🗺️ Reading coordinates...")
+    await update.message.reply_text("🗺️ Sniffing out the local bakeries... (reading coordinates)")
     ai_response = await process_with_gemini(prompt)
-    await update.message.reply_text(ai_response)
+    await update.message.reply_text(ai_response, parse_mode="Markdown")
 
 # ---------------------------------------------------------
 # 4. MULTIMODAL MEDIA HANDLER
 # ---------------------------------------------------------
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
-    await message.reply_text("⏳ Processing file...")
+    await message.reply_text("⏳ Let me bake this file for a sec...")
     
     file_id, mime_type = None, ""
     prompt_text = message.caption if message.caption else ""
@@ -98,7 +98,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         file = await context.bot.get_file(file_id)
         if file.file_size > 20971520:
-            await message.reply_text("⚠️ File exceeds 20MB limit.")
+            await message.reply_text("⚠️ Whoa, that file is too doughy (over 20MB!). Trim it down. 🥟")
             return
 
         file_bytes = await file.download_as_bytearray()
@@ -111,10 +111,10 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 system_instruction=SYSTEM_INSTRUCTION
             )
         )
-        await message.reply_text(response.text)
+        await message.reply_text(response.text, parse_mode="Markdown")
     except Exception as e:
         print(f"Media Error: {e}")
-        await message.reply_text("❌ Error processing media payload.")
+        await message.reply_text("❌ Yikes, that media payload was totally half-baked. Error! 🥧")
 
 # ---------------------------------------------------------
 # 5. HANDLER REGISTRATION
