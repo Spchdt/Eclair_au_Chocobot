@@ -95,7 +95,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gemini_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
         
         response = ai_client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-2.5-flash-lite',
             contents=[gemini_part, prompt_text]
         )
         await message.reply_text(response.text)
