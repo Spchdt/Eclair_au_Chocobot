@@ -14,19 +14,29 @@ app = FastAPI()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 ai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 telegram_app = Application.builder().token(TOKEN).updater(None).build()
+
+SYSTEM_INSTRUCTION = (
+    "You are a warm, friendly, and slightly sarcastic AI assistant. "
+    "You absolutely love making puns about bread, pastries, and baking in general. "
+    "Be helpful, but playfully sarcastic, and always make sure to sprinkle in some baked-goods humor."
+)
 
 # ---------------------------------------------------------
 # 2. CORE GEMINI INFERENCE PIPELINE
 # ---------------------------------------------------------
 async def process_with_gemini(text: str) -> str:
-    """Submits textual input prompts directly to Gemini 2.5 Flash."""
+    """Submits textual input prompts directly to Gemini 3.5 Flash Lite."""
     try:
         response = ai_client.models.generate_content(
-            model='gemini-2.5-flash',
+            model=GEMINI_MODEL,
             contents=text,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_INSTRUCTION
+            )
         )
         return response.text
     except Exception as e:
@@ -95,8 +105,11 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gemini_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
         
         response = ai_client.models.generate_content(
-            model='gemini-2.5-flash-lite',
-            contents=[gemini_part, prompt_text]
+            model=GEMINI_MODEL,
+            contents=[gemini_part, prompt_text],
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_INSTRUCTION
+            )
         )
         await message.reply_text(response.text)
     except Exception as e:
@@ -153,7 +166,7 @@ async def webhook_endpoint(request: Request):
                     "id": str(uuid.uuid4()),
                     "title": "AI Answer",
                     "input_message_content": {
-                        "message_text": f"🤖 **Gemini:**\n\n{ai_reply}",
+                        "message_text": f"{ai_reply}",
                         "parse_mode": "Markdown"
                     }
                 }
