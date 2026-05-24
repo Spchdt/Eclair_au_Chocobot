@@ -20,15 +20,18 @@ ai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 telegram_app = Application.builder().token(TOKEN).updater(None).build()
 
 SYSTEM_INSTRUCTION = (
-    "You are a warm, friendly, and slightly sarcastic AI assistant. "
-    "You absolutely love making puns about bread, pastries, and baking in general. "
-    "Be helpful, but playfully sarcastic, and always make sure to sprinkle in some baked-goods humor. "
-    "Keep your answers very short, punchy, and concise, exactly like sending a quick text message in a chat app. No long paragraphs."
+    "You are a super chill, informal 'Thai-glish' personal AI assistant. "
+    "Your PRIMARY goal is to be helpful and directly answer the user's question. Do not let the persona distract from providing an actual, accurate answer. "
+    "To show your personality, mix Thai and English together (about 50/50 Thai/English). "
+    "Use a friendly, casual, and laid-back tone like young people in Bangkok. "
+    "Be slightly bitchy and playful towards the user, like a close friend who loves to tease and lightly roast them, but keep it lighthearted and affectionate. "
+    "Use casual Thai particles like 'na', 'krub', 'kub', 'pa', and 'laew' naturally in your sentences. "
+    "Keep the vibe relaxed and breezy. Keep your answers short, punchy, and concise."
 )
 
 def get_system_instruction(chat_type: str) -> str:
     if chat_type == "guest" or chat_type == "group":
-        return SYSTEM_INSTRUCTION + " \n\n[System Note: You are currently talking in a GROUP chat (guest mode) with multiple people. Acknowledge the group setting if appropriate, and remember others are reading along with the person who triggered you.]"
+        return SYSTEM_INSTRUCTION + " \n\n[System Note: You are currently in a GROUP chat (guest mode) where others can read the messages. However, you are still the personal assistant to the specific user talking to you. Focus entirely on answering the user directly and normally, without over-addressing the rest of the group.]"
     return SYSTEM_INSTRUCTION + " \n\n[System Note: You are currently talking in a PRIVATE 1-on-1 direct message.]"
 
 # ---------------------------------------------------------
@@ -47,17 +50,17 @@ async def process_with_gemini(text: str, chat_type: str = "dm") -> str:
         return response.text
     except Exception as e:
         print(f"Gemini Error: {e}")
-        return "Oops, looks like my dough didn't rise. Can you try again? 🥨"
+        return "Oops, error nid noi na krub. Mai pen rai, try again dai pa?"
 
 # ---------------------------------------------------------
 # 3. DIRECT STANDARD CHAT HANDLERS
 # ---------------------------------------------------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_message = (
-        "🥖 *Fresh out the oven!*\n\n"
-        "I'm your friendly (and slightly crusty) AI assistant.\n"
-        "Tag me with `@username query`, or send me pics, voice notes, and docs. "
-        "Let's get this bread! 🥐"
+        "👋 *Sawasdee krub!*\n\n"
+        "I'm your super chill AI friend laew.\n"
+        "Tag me with `@username query`, jing jing kor send me pics, voice notes, and docs dai mhod na. "
+        "Come chat gun ter! ✨"
     )
     await update.message.reply_text(welcome_message, parse_mode="Markdown")
 
@@ -82,13 +85,19 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file_id, mime_type = replied_msg.video.file_id, replied_msg.video.mime_type or "video/mp4"
         elif replied_msg.document:
             file_id, mime_type = replied_msg.document.file_id, replied_msg.document.mime_type
+        elif replied_msg.sticker:
+            file_id = replied_msg.sticker.file_id
+            if replied_msg.sticker.is_video:
+                mime_type = "video/webm"
+            else:
+                mime_type = "image/webp"
             
     if file_id:
-        await msg.reply_text("⏳ Let me unroll this replied media...", parse_mode="Markdown")
+        await msg.reply_text("⏳ Wait paep na... let me unroll this media gorn...", parse_mode="Markdown")
         try:
             file = await context.bot.get_file(file_id)
             if file.file_size > 20971520:
-                await msg.reply_text("⚠️ That replied file is too doughy (over 20MB!).")
+                await msg.reply_text("⚠️ Oh ho! Yai mak krub (over 20MB!). Mai wai laew.")
                 return
 
             file_bytes = await file.download_as_bytearray()
@@ -104,7 +113,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(response.text, parse_mode="Markdown")
         except Exception as e:
             print(f"Reply Media Error: {e}")
-            await msg.reply_text("❌ Yikes, couldn't bake the media you replied to. Error! 🥧")
+            await msg.reply_text("❌ Yikes, error krub. Can't read this media na pa. 🥲")
     else:
         ai_response = await process_with_gemini(prompt, chat_type)
         await msg.reply_text(ai_response, parse_mode="Markdown")
@@ -113,7 +122,7 @@ async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lat, lon = update.message.location.latitude, update.message.location.longitude
     chat_type = "group" if update.message.chat.type in ["group", "supergroup"] else "dm"
     prompt = f"I pinned a map location at Lat: {lat}, Lon: {lon}. Briefly describe the area."
-    await update.message.reply_text("🗺️ Sniffing out the local bakeries... (reading coordinates)")
+    await update.message.reply_text("🗺️ Du map paep na krub... (reading coordinates)")
     ai_response = await process_with_gemini(prompt, chat_type)
     await update.message.reply_text(ai_response, parse_mode="Markdown")
 
@@ -123,7 +132,7 @@ async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     chat_type = "group" if message.chat.type in ["group", "supergroup"] else "dm"
-    await message.reply_text("⏳ Let me bake this file for a sec...")
+    await message.reply_text("⏳ Process paep na...")
     
     file_id, mime_type = None, ""
     prompt_text = message.caption if message.caption else ""
@@ -143,13 +152,20 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif message.document:
         file_id, mime_type = message.document.file_id, message.document.mime_type
         if not prompt_text: prompt_text = "Summarize this document."
+    elif message.sticker:
+        file_id = message.sticker.file_id
+        if message.sticker.is_video:
+            mime_type = "video/webm"
+        else:
+            mime_type = "image/webp"
+        if not prompt_text: prompt_text = "Describe this sticker."
     else:
         return
 
     try:
         file = await context.bot.get_file(file_id)
         if file.file_size > 20971520:
-            await message.reply_text("⚠️ Whoa, that file is too doughy (over 20MB!). Trim it down. 🥟")
+            await message.reply_text("⚠️ Oh ho! Yai mak krub (over 20MB!). Mai wai laew.")
             return
 
         file_bytes = await file.download_as_bytearray()
@@ -165,14 +181,14 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(response.text, parse_mode="Markdown")
     except Exception as e:
         print(f"Media Error: {e}")
-        await message.reply_text("❌ Yikes, that media payload was totally half-baked. Error! 🥧")
+        await message.reply_text("❌ Yikes, payload error krub. Try mai na pa. 🥲")
 
 # ---------------------------------------------------------
 # 5. HANDLER REGISTRATION
 # ---------------------------------------------------------
 telegram_app.add_handler(CommandHandler("start", start_command))
 telegram_app.add_handler(MessageHandler(filters.LOCATION, location_handler))
-media_filters = (filters.PHOTO | filters.VIDEO | filters.VOICE | filters.AUDIO | filters.Document.ALL)
+media_filters = (filters.PHOTO | filters.VIDEO | filters.VOICE | filters.AUDIO | filters.Document.ALL | filters.Sticker.ALL)
 telegram_app.add_handler(MessageHandler(media_filters, media_handler))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
@@ -236,6 +252,13 @@ async def webhook_endpoint(request: Request):
                 file_id = guest_msg["document"]["file_id"]
                 mime_type = guest_msg["document"].get("mime_type", "application/octet-stream")
                 if not clean_prompt: clean_prompt = "Summarize this document."
+            elif "sticker" in guest_msg:
+                file_id = guest_msg["sticker"]["file_id"]
+                if guest_msg["sticker"].get("is_video"):
+                    mime_type = "video/webm"
+                else:
+                    mime_type = "image/webp"
+                if not clean_prompt: clean_prompt = "Describe this sticker."
             elif "location" in guest_msg:
                 lat, lon = guest_msg["location"]["latitude"], guest_msg["location"]["longitude"]
                 clean_prompt = f"I pinned a map location at Lat: {lat}, Lon: {lon}. Briefly describe the area."
@@ -251,13 +274,19 @@ async def webhook_endpoint(request: Request):
                 elif "document" in replied_msg:
                     file_id = replied_msg["document"]["file_id"]
                     mime_type = replied_msg["document"].get("mime_type", "application/octet-stream")
+                elif "sticker" in replied_msg:
+                    file_id = replied_msg["sticker"]["file_id"]
+                    if replied_msg["sticker"].get("is_video"):
+                        mime_type = "video/webm"
+                    else:
+                        mime_type = "image/webp"
             
             if guest_query_id and (clean_prompt or file_id):
                 try:
                     if file_id:
                         file = await telegram_app.bot.get_file(file_id)
                         if file.file_size > 20971520:
-                            ai_reply = "⚠️ Whoa, that file is too doughy (over 20MB!). Trim it down. 🥟"
+                            ai_reply = "⚠️ Oh ho! Yai mak krub (over 20MB!). Mai wai laew."
                         else:
                             file_bytes = await file.download_as_bytearray()
                             gemini_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
@@ -274,7 +303,7 @@ async def webhook_endpoint(request: Request):
                         ai_reply = await process_with_gemini(clean_prompt, "guest")
                 except Exception as e:
                     print(f"Guest Processing Error: {e}")
-                    ai_reply = "Oops, looks like my dough didn't rise. Can you try again? 🥨"
+                    ai_reply = "Oops, error nid noi na krub. Mai pen rai, try again dai pa?"
                 
                 # Per the documentation, answerGuestQuery requires 'result' to be an InlineQueryResult
                 inline_result = {
