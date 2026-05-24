@@ -26,17 +26,22 @@ SYSTEM_INSTRUCTION = (
     "Keep your answers very short, punchy, and concise, exactly like sending a quick text message in a chat app. No long paragraphs."
 )
 
+def get_system_instruction(chat_type: str) -> str:
+    if chat_type == "guest" or chat_type == "group":
+        return SYSTEM_INSTRUCTION + " \n\n[System Note: You are currently talking in a GROUP chat (guest mode) with multiple people. Acknowledge the group setting if appropriate, and remember others are reading along with the person who triggered you.]"
+    return SYSTEM_INSTRUCTION + " \n\n[System Note: You are currently talking in a PRIVATE 1-on-1 direct message.]"
+
 # ---------------------------------------------------------
 # 2. CORE GEMINI INFERENCE PIPELINE
 # ---------------------------------------------------------
-async def process_with_gemini(text: str) -> str:
+async def process_with_gemini(text: str, chat_type: str = "dm") -> str:
     """Submits textual input prompts directly to Gemini."""
     try:
         response = ai_client.models.generate_content(
             model=GEMINI_MODEL,
             contents=text,
             config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION
+                system_instruction=get_system_instruction(chat_type)
             )
         )
         return response.text
@@ -57,14 +62,59 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_message, parse_mode="Markdown")
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ai_response = await process_with_gemini(update.message.text)
-    await update.message.reply_text(ai_response, parse_mode="Markdown")
+    msg = update.message
+    prompt = msg.text
+    chat_type = "group" if msg.chat.type in ["group", "supergroup"] else "dm"
+    
+    file_id, mime_type = None, ""
+
+    # Check if this is a reply to another message to give Gemini context
+    if msg.reply_to_message:
+        replied_msg = msg.reply_to_message
+        replied_text = replied_msg.text or replied_msg.caption or ""
+        if replied_text:
+            prompt = f'I am replying to this message: "{replied_text}"\n\nMy response/query: {prompt}'
+            
+        # Check if the replied message contains media
+        if replied_msg.photo:
+            file_id, mime_type = replied_msg.photo[-1].file_id, "image/jpeg"
+        elif replied_msg.video:
+            file_id, mime_type = replied_msg.video.file_id, replied_msg.video.mime_type or "video/mp4"
+        elif replied_msg.document:
+            file_id, mime_type = replied_msg.document.file_id, replied_msg.document.mime_type
+            
+    if file_id:
+        await msg.reply_text("⏳ Let me unroll this replied media...", parse_mode="Markdown")
+        try:
+            file = await context.bot.get_file(file_id)
+            if file.file_size > 20971520:
+                await msg.reply_text("⚠️ That replied file is too doughy (over 20MB!).")
+                return
+
+            file_bytes = await file.download_as_bytearray()
+            gemini_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
+            
+            response = ai_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[gemini_part, prompt],
+                config=types.GenerateContentConfig(
+                    system_instruction=get_system_instruction(chat_type)
+                )
+            )
+            await msg.reply_text(response.text, parse_mode="Markdown")
+        except Exception as e:
+            print(f"Reply Media Error: {e}")
+            await msg.reply_text("❌ Yikes, couldn't bake the media you replied to. Error! 🥧")
+    else:
+        ai_response = await process_with_gemini(prompt, chat_type)
+        await msg.reply_text(ai_response, parse_mode="Markdown")
 
 async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lat, lon = update.message.location.latitude, update.message.location.longitude
+    chat_type = "group" if update.message.chat.type in ["group", "supergroup"] else "dm"
     prompt = f"I pinned a map location at Lat: {lat}, Lon: {lon}. Briefly describe the area."
     await update.message.reply_text("🗺️ Sniffing out the local bakeries... (reading coordinates)")
-    ai_response = await process_with_gemini(prompt)
+    ai_response = await process_with_gemini(prompt, chat_type)
     await update.message.reply_text(ai_response, parse_mode="Markdown")
 
 # ---------------------------------------------------------
@@ -72,6 +122,7 @@ async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
+    chat_type = "group" if message.chat.type in ["group", "supergroup"] else "dm"
     await message.reply_text("⏳ Let me bake this file for a sec...")
     
     file_id, mime_type = None, ""
@@ -108,7 +159,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             model=GEMINI_MODEL,
             contents=[gemini_part, prompt_text],
             config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION
+                system_instruction=get_system_instruction(chat_type)
             )
         )
         await message.reply_text(response.text, parse_mode="Markdown")
@@ -156,7 +207,15 @@ async def webhook_endpoint(request: Request):
             bot_username = telegram_app.bot.username or ""
             clean_prompt = prompt_text.replace(f"@{bot_username}", "").strip()
 
+            if "reply_to_message" in guest_msg:
+                replied_msg = guest_msg["reply_to_message"]
+                replied_text = replied_msg.get("text") or replied_msg.get("caption") or ""
+                if replied_text:
+                    clean_prompt = f'I am replying to this message: "{replied_text}"\n\nMy response/query: {clean_prompt}'
+
             file_id, mime_type = None, ""
+            
+            # 1) Check for media in the message itself
             if "photo" in guest_msg:
                 file_id = guest_msg["photo"][-1]["file_id"]
                 mime_type = "image/jpeg"
@@ -180,6 +239,18 @@ async def webhook_endpoint(request: Request):
             elif "location" in guest_msg:
                 lat, lon = guest_msg["location"]["latitude"], guest_msg["location"]["longitude"]
                 clean_prompt = f"I pinned a map location at Lat: {lat}, Lon: {lon}. Briefly describe the area."
+            # 2) Fallback: check if the replied message has media we should process
+            elif "reply_to_message" in guest_msg:
+                replied_msg = guest_msg["reply_to_message"]
+                if "photo" in replied_msg:
+                    file_id = replied_msg["photo"][-1]["file_id"]
+                    mime_type = "image/jpeg"
+                elif "video" in replied_msg:
+                    file_id = replied_msg["video"]["file_id"]
+                    mime_type = replied_msg["video"].get("mime_type", "video/mp4")
+                elif "document" in replied_msg:
+                    file_id = replied_msg["document"]["file_id"]
+                    mime_type = replied_msg["document"].get("mime_type", "application/octet-stream")
             
             if guest_query_id and (clean_prompt or file_id):
                 try:
@@ -194,13 +265,13 @@ async def webhook_endpoint(request: Request):
                                 model=GEMINI_MODEL,
                                 contents=[gemini_part, clean_prompt],
                                 config=types.GenerateContentConfig(
-                                    system_instruction=SYSTEM_INSTRUCTION
+                                    system_instruction=get_system_instruction("guest")
                                 )
                             )
                             ai_reply = response.text
                     else:
                         # Standard text or location prompt
-                        ai_reply = await process_with_gemini(clean_prompt)
+                        ai_reply = await process_with_gemini(clean_prompt, "guest")
                 except Exception as e:
                     print(f"Guest Processing Error: {e}")
                     ai_reply = "Oops, looks like my dough didn't rise. Can you try again? 🥨"
