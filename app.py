@@ -1,6 +1,5 @@
 import os
-import uuid
-import json
+import httpx
 from fastapi import FastAPI, Request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -12,23 +11,17 @@ from google.genai import types
 # ---------------------------------------------------------
 app = FastAPI()
 
-# Retrieve necessary environment variables from Render's runtime context
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_HOSTNAME")
-# Initialize the state-of-the-art Google GenAI SDK client
 ai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-# Instantiate the asynchronous Telegram Application wrapper
 telegram_app = Application.builder().token(TOKEN).updater(None).build()
 
 # ---------------------------------------------------------
 # 2. CORE GEMINI INFERENCE PIPELINE
 # ---------------------------------------------------------
 async def process_with_gemini(text: str) -> str:
-    """
-    Submits clean textual input prompts directly to the Gemini 2.5 Flash model
-    and extracts the raw response contents.
-    """
+    """Submits text prompts cleanly to the Gemini 2.5 Flash model."""
     try:
         response = ai_client.models.generate_content(
             model='gemini-2.5-flash',
@@ -43,7 +36,6 @@ async def process_with_gemini(text: str) -> str:
 # 3. DIRECT STANDARD CHAT HANDLERS
 # ---------------------------------------------------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Answers the start command with a formatted introductory payload."""
     welcome_message = (
         "🤖 *I am your Ultimate Multimodal AI Assistant!*\n\n"
         "✨ *Features Active*:\n"
@@ -54,12 +46,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_message, parse_mode="Markdown")
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Processes classic direct text messages."""
     ai_response = await process_with_gemini(update.message.text)
     await update.message.reply_text(ai_response)
 
 async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Extracts geographic coordinates and queries Gemini to outline the local context."""
     lat, lon = update.message.location.latitude, update.message.location.longitude
     prompt = f"I pinned a map location at Lat: {lat}, Lon: {lon}. Briefly state what city/region this is, and 2 unique details about it."
     await update.message.reply_text("🗺️ Reading coordinates...")
@@ -70,17 +60,12 @@ async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 4. MULTIMODAL MEDIA HANDLER
 # ---------------------------------------------------------
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Intercepts incoming photos, voice, audio, video files and document metadata.
-    Downloads the files securely to memory and relays them directly to Gemini's multimodal layer.
-    """
     message = update.message
     await message.reply_text("⏳ Processing file...")
     
     file_id, mime_type = None, ""
     prompt_text = message.caption if message.caption else ""
 
-    # Parse appropriate attributes based on standard Telegram message types
     if message.photo:
         file_id, mime_type = message.photo[-1].file_id, "image/jpeg"
         if not prompt_text: prompt_text = "Describe this image in detail."
@@ -100,17 +85,14 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        # Request Telegram file configuration metrics
         file = await context.bot.get_file(file_id)
         if file.file_size > 20971520:
             await message.reply_text("⚠️ File exceeds Telegram's 20MB limit.")
             return
 
-        # Fetch bytes into memory
         file_bytes = await file.download_as_bytearray()
         gemini_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
         
-        # Dispatch to Gemini multimodel framework
         response = ai_client.models.generate_content(
             model='gemini-2.5-flash',
             contents=[gemini_part, prompt_text]
@@ -127,23 +109,18 @@ telegram_app.add_handler(CommandHandler("start", start_command))
 telegram_app.add_handler(MessageHandler(filters.LOCATION, location_handler))
 media_filters = (filters.PHOTO | filters.VIDEO | filters.VOICE | filters.AUDIO | filters.Document.ALL)
 telegram_app.add_handler(MessageHandler(media_filters, media_handler))
-# Direct standard text handler (Must remain as the final registered message receiver)
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 # ---------------------------------------------------------
-# 6. WEBHOOK AND INTERCEPT CORES (GUEST DETECTION)
+# 6. WEBHOOK AND RAW INTERCEPT OVERRIDES
 # ---------------------------------------------------------
 @app.on_event("startup")
 async def on_startup():
-    """
-    Binds FastAPI's startup event hooks to initialize Telegram webhooks with Render's URL.
-    CRITICAL: We must explicitly pass 'guest_message' in allowed_updates.
-    """
+    """Initializes webhook and forces registration of the core 'guest_message' payload string."""
     await telegram_app.initialize()
     if WEBHOOK_URL:
-        # We explicitly request 'guest_message' and standard message types
+        # Forcing raw subscription parameter lists across Telegram engine endpoints
         allowed_updates_list = ["message", "edited_message", "callback_query", "guest_message"]
-        
         await telegram_app.bot.set_webhook(
             url=f"https://{WEBHOOK_URL}/webhook",
             allowed_updates=allowed_updates_list
@@ -152,64 +129,58 @@ async def on_startup():
 
 @app.post("/webhook")
 async def webhook_endpoint(request: Request):
-    """
-    Main webhook entry point.
-    Intercepts updates dynamically to identify newest Telegram Bot API 10.0+ Guest Mode queries,
-    or falls back gracefully to default messaging pipelines.
-    """
+    """Intercepts and process raw payload buffers before standard wrapper handlers see them."""
     try:
         data = await request.json()
-        
-        # Intercept Guest Summoning updates (update.guest_message)
-        if "guest_message" in data:
-            guest_msg = data["guest_message"]
-            query_id = guest_msg.get("guest_query_id")
-            text_prompt = guest_msg.get("text", "")
+        print(f"Incoming Webhook Payload: {data}")  # Diagnostic visibility log
 
-            # Scrub the bot's username mention out of the text prompt
+        # RAW INTERCEPT METHOD: Process guest updates directly from JSON structure
+        guest_query_id = None
+        chat_id = None
+        text_prompt = ""
+
+        # Check for direct guest_message payload array structures
+        if "guest_message" in data:
+            gm = data["guest_message"]
+            guest_query_id = gm.get("guest_query_id")
+            chat_id = gm.get("chat", {}).get("id")
+            text_prompt = gm.get("text", "")
+        # Fallback tracking wrapper structures
+        elif "message" in data and "guest_query_id" in data["message"]:
+            gm = data["message"]
+            guest_query_id = gm.get("guest_query_id")
+            chat_id = gm.get("chat", {}).get("id")
+            text_prompt = gm.get("text", "")
+
+        if guest_query_id and chat_id and text_prompt:
+            # Strip target bot mentions cleanly
             bot_username = telegram_app.bot.username or ""
             clean_prompt = text_prompt.replace(f"@{bot_username}", "").strip()
             
-            if clean_prompt and query_id:
-                # Ask Gemini for the answer
-                ai_reply = await process_with_gemini(clean_prompt)
-                
-                # Format response as an InlineQueryResultArticle inside a JSON payload
-                inline_result = {
-                    "type": "article",
-                    "id": str(uuid.uuid4()),
-                    "title": "AI Response",
-                    "input_message_content": {
-                        "message_text": f"🤖 **Gemini:**\n\n{ai_reply}",
-                        "parse_mode": "Markdown"
-                    }
+            # Fetch AI inference context
+            ai_reply = await process_with_gemini(clean_prompt)
+            
+            # Formulate full direct HTTP fallback requests to ensure delivery compatibility
+            async with httpx.AsyncClient() as client:
+                url = f"https://api.telegram.org/bot{TOKEN}/answerGuestQuery"
+                payload = {
+                    "guest_query_id": str(guest_query_id),
+                    "chat_id": int(chat_id),
+                    "text": f"🤖 *AI Assistant Guest Answer*:\n\n{ai_reply}",
+                    "parse_mode": "Markdown"
                 }
-                
-                # Send back response via answerGuestQuery endpoint
-                try:
-                    await telegram_app.bot.custom_request(
-                        method="post",
-                        endpoint="answerGuestQuery",
-                        data={
-                            "guest_query_id": query_id,
-                            "result": json.dumps(inline_result)
-                        }
-                    )
-                    print(f"Successfully answered Guest query ID: {query_id}")
-                except Exception as inner_e:
-                    print(f"Error executing answerGuestQuery: {inner_e}")
-                
-                return {"status": "guest_processed"}
+                res = await client.post(url, json=payload)
+                print(f"Direct answerGuestQuery Response status: {res.status_code}, data: {res.text}")
+            return {"status": "guest_processed_raw"}
 
-        # Fallback: Process normal message updates
+        # Normal standard chat framework operational route mapping
         update = Update.de_json(data, telegram_app.bot)
         await telegram_app.process_update(update)
         
     except Exception as e:
-        print(f"Webhook routing variance: {e}")
+        print(f"Webhook routing variance trace: {e}")
     return {"status": "ok"}
 
 @app.get("/")
 def health_check():
-    """Used for ping keep-alive processes (such as UptimeRobot integrations)."""
     return {"status": "online", "system": "guest_ready_multimodal"}
