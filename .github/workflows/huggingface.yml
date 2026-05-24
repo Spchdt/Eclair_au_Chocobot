@@ -18,4 +18,4 @@ jobs:
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push --force https://NAME:$HF_TOKEN@huggingface.co/spaces/spchdt/Eclair_au_Chocobot main
+        run: git push --force https://spchdt:${HF_TOKEN}@huggingface.co/spaces/spchdt/Eclair_au_Chocobot main
