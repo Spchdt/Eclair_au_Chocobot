@@ -1,7 +1,8 @@
 import os
+import uuid
 from fastapi import FastAPI, Request
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
+from telegram.ext import Application, CommandHandler, MessageHandler, InlineQueryHandler, filters, ContextTypes
 from google import genai
 from google.genai import types
 
@@ -13,7 +14,7 @@ app = FastAPI()
 # Fetch environment variables required for Render and API access
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_HOSTNAME")
-# Initialize the new Google GenAI SDK client
+# Initialize the Google GenAI SDK client
 ai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 # Build the Telegram App framework (Updater is None since we use Webhooks)
@@ -33,8 +34,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎵 Audio Files\n"
         "🎥 Videos\n"
         "📄 Documents (PDFs, txt, etc.)\n"
-        "📍 Locations (Share your map pin!)\n\n"
-        "Try sending me something!"
+        "📍 Locations (Share your map pin!)\n"
+        "💬 Inline Mode (Type @my_bot_name in any chat!)\n\n"
+        "Fire away!"
     )
     await update.message.reply_text(welcome_message, parse_mode="Markdown")
 
@@ -46,7 +48,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     
     try:
-        # Standard text generation
         response = ai_client.models.generate_content(
             model='gemini-2.5-flash',
             contents=user_text,
@@ -79,13 +80,10 @@ async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Location Error: {e}")
 
 # ---------------------------------------------------------
-# 4. UNIVERSAL MEDIA HANDLER (The Magic Function)
+# 4. UNIVERSAL MEDIA HANDLER
 # ---------------------------------------------------------
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Dynamically handles Photos, Videos, Documents, Voice, and Audio.
-    Downloads the file into memory and passes the raw bytes directly to Gemini.
-    """
+    """Dynamically handles Photos, Videos, Documents, Voice, and Audio."""
     message = update.message
     await message.reply_text("⏳ Processing your file...")
     
@@ -93,9 +91,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mime_type = ""
     prompt_text = message.caption if message.caption else ""
 
-    # 1. Determine exactly what type of media the user sent
     if message.photo:
-        # Telegram sends an array of photo sizes. [-1] is the highest resolution.
         file_id = message.photo[-1].file_id
         mime_type = "image/jpeg"
         if not prompt_text:
@@ -130,36 +126,61 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        # 2. Ask Telegram for the file metadata
         file = await context.bot.get_file(file_id)
         
-        # Telegram Bot API limits standard downloads to 20MB. 
-        # (20MB = 20 * 1024 * 1024 = 20971520 bytes)
+        # Limit standard downloads to 20MB to respect Telegram's Bot API limits
         if file.file_size > 20971520:
             await message.reply_text("⚠️ This file is larger than the 20MB Telegram bot limit. Please send a smaller file.")
             return
 
-        # 3. Download the file into RAM (bytearray)
         file_bytes = await file.download_as_bytearray()
-        
-        # 4. Package the bytes and prompt for Gemini
         gemini_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
         
-        # 5. Execute the Multimodal AI Request
         response = ai_client.models.generate_content(
             model='gemini-2.5-flash',
             contents=[gemini_part, prompt_text]
         )
-        
-        # Send the AI's thoughts back to the user
         await message.reply_text(response.text)
         
     except Exception as e:
         print(f"Media processing error: {e}")
-        await message.reply_text(f"❌ Sorry, I encountered an error analyzing that file. Ensure it is a valid format.")
+        await message.reply_text("❌ Sorry, I encountered an error analyzing that file. Ensure it is a valid format.")
 
 # ---------------------------------------------------------
-# 5. ROUTING & HANDLER REGISTRATION
+# 5. INLINE QUERY HANDLER
+# ---------------------------------------------------------
+async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Processes queries typed directly in the chat box (e.g., @botname query)."""
+    query = update.inline_query.query
+
+    if not query:
+        return
+
+    try:
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=query,
+        )
+        
+        results = [
+            InlineQueryResultArticle(
+                id=str(uuid.uuid4()),
+                title="Send AI Answer",
+                description=f"Generate response for: {query}",
+                input_message_content=InputTextMessageContent(
+                    message_text=f"🗣️ **You asked:** {query}\n\n🤖 **Gemini:** {response.text}", 
+                    parse_mode="Markdown"
+                )
+            )
+        ]
+        
+        await update.inline_query.answer(results, cache_time=0)
+        
+    except Exception as e:
+        print(f"Inline Query Error: {e}")
+
+# ---------------------------------------------------------
+# 6. ROUTING & HANDLER REGISTRATION
 # ---------------------------------------------------------
 # Command: /start
 telegram_app.add_handler(CommandHandler("start", start_command))
@@ -168,22 +189,23 @@ telegram_app.add_handler(CommandHandler("start", start_command))
 telegram_app.add_handler(MessageHandler(filters.LOCATION, location_handler))
 
 # Filter: All Media (Photos, Video, Voice, Audio, Documents)
-# The bitwise OR operator (|) combines these filters together
 media_filters = (filters.PHOTO | filters.VIDEO | filters.VOICE | filters.AUDIO | filters.Document.ALL)
 telegram_app.add_handler(MessageHandler(media_filters, media_handler))
 
-# Filter: Standard Text (Must be registered last to not accidentally catch media captions)
+# Filter: Inline Queries
+telegram_app.add_handler(InlineQueryHandler(inline_query_handler))
+
+# Filter: Standard Text (Must be registered last)
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 # ---------------------------------------------------------
-# 6. FASTAPI WEBHOOK CONFIGURATION
+# 7. FASTAPI WEBHOOK CONFIGURATION
 # ---------------------------------------------------------
 @app.on_event("startup")
 async def on_startup():
     """Initializes the bot and binds the webhook to the Render URL."""
     await telegram_app.initialize()
     if WEBHOOK_URL:
-        # Inform Telegram to push messages to our Render endpoint
         await telegram_app.bot.set_webhook(url=f"https://{WEBHOOK_URL}/webhook")
         print(f"System Online: Webhook bound to https://{WEBHOOK_URL}/webhook")
     else:
@@ -195,7 +217,6 @@ async def webhook_endpoint(request: Request):
     try:
         data = await request.json()
         update = Update.de_json(data, telegram_app.bot)
-        # Push the update into the application framework
         await telegram_app.process_update(update)
     except Exception as e:
         print(f"Webhook ingestion error: {e}")
