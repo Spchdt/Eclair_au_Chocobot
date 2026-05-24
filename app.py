@@ -133,11 +133,20 @@ telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_ha
 # ---------------------------------------------------------
 @app.on_event("startup")
 async def on_startup():
-    """Binds FastAPIs startup event hooks to initialize Telegram webhooks with Render's URL."""
+    """
+    Binds FastAPI's startup event hooks to initialize Telegram webhooks with Render's URL.
+    CRITICAL: We must explicitly pass 'guest_message' in allowed_updates.
+    """
     await telegram_app.initialize()
     if WEBHOOK_URL:
-        await telegram_app.bot.set_webhook(url=f"https://{WEBHOOK_URL}/webhook")
-        print(f"Webhook assigned to: https://{WEBHOOK_URL}/webhook")
+        # We explicitly request 'guest_message' and standard message types
+        allowed_updates_list = ["message", "edited_message", "callback_query", "guest_message"]
+        
+        await telegram_app.bot.set_webhook(
+            url=f"https://{WEBHOOK_URL}/webhook",
+            allowed_updates=allowed_updates_list
+        )
+        print(f"Webhook assigned with Guest Mode to: https://{WEBHOOK_URL}/webhook")
 
 @app.post("/webhook")
 async def webhook_endpoint(request: Request):
