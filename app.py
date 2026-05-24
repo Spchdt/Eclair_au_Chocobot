@@ -24,11 +24,14 @@ SYSTEM_INSTRUCTION = (
     "Your PRIMARY goal is to be helpful and directly answer your friend's question. Do not let the persona distract from providing an actual, accurate answer. "
     "Mix transliterated Thai (written using the English alphabet ONLY, no Thai script) and English together (about 50/50 Thai/English). "
     "Use a friendly, casual, and laid-back tone like young people in Bangkok. "
-    "Use casual Thai pronouns like 'gu' (I/me) and 'mng' (you) from time to time, as appropriate for a close friend. "
+    "Use casual Thai pronouns like 'gu' (I/me) and 'mng' (you), but don't overuse 'mng', mix in 'u' and 'I' sometimes too. "
+    "Occasionally blend in a bit of Singlish sentence structure and vocabulary (e.g., ending sentences with 'lah', 'lor', 'meh', or saying 'can', 'cannot', 'also can' naturally). "
     "Be slightly bitchy and playful, like a close friend who loves to tease and lightly roast them, but keep it lighthearted and affectionate. "
     "Use casual Thai particles like 'na', 'krub', 'kub', 'pa', and 'laew' naturally in your sentences. "
-    "Keep the vibe relaxed and breezy. Keep your answers short, punchy, and concise. "
-    "Do NOT end your messages with open-ended customer-service questions like 'What's on your mind?', 'How can I help?', or 'Anything else?'. Just answer the question or make your comment and drop the mic like a normal text."
+    "Keep the vibe relaxed and breezy. Keep your answers short, punchy, and concise, unless a longer explanation is actually needed. "
+    "Do NOT use long em dashes (—). "
+    "Do NOT end your messages with open-ended customer-service questions like 'What's on your mind?', 'How can I help?', or 'Anything else?'. Just answer the question or make your comment and drop the mic like a normal text. "
+    "If the user sends an image, video, or document, do NOT describe what is in it. A friend wouldn't describe an image back to you. Just react to it naturally or answer their specific question about it."
 )
 
 def get_system_instruction(chat_type: str) -> str:
@@ -143,29 +146,29 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if message.photo:
         file_id, mime_type = message.photo[-1].file_id, "image/jpeg"
-        if not prompt_text: prompt_text = "Describe this image in detail."
+        if not prompt_text: prompt_text = "I just sent you this image. React to it."
     elif message.video:
         file_id, mime_type = message.video.file_id, message.video.mime_type or "video/mp4"
-        if not prompt_text: prompt_text = "Summarize this video clip."
+        if not prompt_text: prompt_text = "I just sent you this video clip. React to it."
     elif message.voice:
         file_id, mime_type = message.voice.file_id, message.voice.mime_type or "audio/ogg"
-        if not prompt_text: prompt_text = "Transcribe and answer this voice message."
+        if not prompt_text: prompt_text = "I just sent you this voice message. Reply to it."
     elif message.audio:
         file_id, mime_type = message.audio.file_id, message.audio.mime_type or "audio/mpeg"
-        if not prompt_text: prompt_text = "Analyze this audio track."
+        if not prompt_text: prompt_text = "I just sent you this audio track. React to it."
     elif message.document:
         file_id, mime_type = message.document.file_id, message.document.mime_type
-        if not prompt_text: prompt_text = "Summarize this document."
+        if not prompt_text: prompt_text = "I just sent you this document. React to it."
     elif message.sticker:
         file_id = message.sticker.file_id
         if message.sticker.is_video:
             mime_type = "video/webm"
         else:
             mime_type = "image/webp"
-        if not prompt_text: prompt_text = "Describe this sticker."
+        if not prompt_text: prompt_text = "I just sent you this sticker. React to it."
     elif message.video_note:
         file_id, mime_type = message.video_note.file_id, "video/mp4"
-        if not prompt_text: prompt_text = "Summarize this video note."
+        if not prompt_text: prompt_text = "I just sent you this video note. React to it."
     else:
         return
 
@@ -242,34 +245,34 @@ async def webhook_endpoint(request: Request):
             if "photo" in guest_msg:
                 file_id = guest_msg["photo"][-1]["file_id"]
                 mime_type = "image/jpeg"
-                if not clean_prompt: clean_prompt = "Describe this image in detail."
+                if not clean_prompt: clean_prompt = "I just sent you this image. React to it."
             elif "video" in guest_msg:
                 file_id = guest_msg["video"]["file_id"]
                 mime_type = guest_msg["video"].get("mime_type", "video/mp4")
-                if not clean_prompt: clean_prompt = "Summarize this video clip."
+                if not clean_prompt: clean_prompt = "I just sent you this video clip. React to it."
             elif "voice" in guest_msg:
                 file_id = guest_msg["voice"]["file_id"]
                 mime_type = guest_msg["voice"].get("mime_type", "audio/ogg")
-                if not clean_prompt: clean_prompt = "Transcribe and answer this voice message."
+                if not clean_prompt: clean_prompt = "I just sent you this voice message. Reply to it."
             elif "audio" in guest_msg:
                 file_id = guest_msg["audio"]["file_id"]
                 mime_type = guest_msg["audio"].get("mime_type", "audio/mpeg")
-                if not clean_prompt: clean_prompt = "Analyze this audio track."
+                if not clean_prompt: clean_prompt = "I just sent you this audio track. React to it."
             elif "document" in guest_msg:
                 file_id = guest_msg["document"]["file_id"]
                 mime_type = guest_msg["document"].get("mime_type", "application/octet-stream")
-                if not clean_prompt: clean_prompt = "Summarize this document."
+                if not clean_prompt: clean_prompt = "I just sent you this document. React to it."
             elif "sticker" in guest_msg:
                 file_id = guest_msg["sticker"]["file_id"]
                 if guest_msg["sticker"].get("is_video"):
                     mime_type = "video/webm"
                 else:
                     mime_type = "image/webp"
-                if not clean_prompt: clean_prompt = "Describe this sticker."
+                if not clean_prompt: clean_prompt = "I just sent you this sticker. React to it."
             elif "video_note" in guest_msg:
                 file_id = guest_msg["video_note"]["file_id"]
                 mime_type = "video/mp4"
-                if not clean_prompt: clean_prompt = "Summarize this video note."
+                if not clean_prompt: clean_prompt = "I just sent you this video note. React to it."
             elif "location" in guest_msg:
                 lat, lon = guest_msg["location"]["latitude"], guest_msg["location"]["longitude"]
                 clean_prompt = f"I pinned a map location at Lat: {lat}, Lon: {lon}. Briefly describe the area."
