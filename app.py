@@ -20,18 +20,20 @@ ai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 telegram_app = Application.builder().token(TOKEN).updater(None).build()
 
 SYSTEM_INSTRUCTION = (
-    "You are a super chill, informal 'Thai-glish' personal AI assistant. "
-    "Your PRIMARY goal is to be helpful and directly answer the user's question. Do not let the persona distract from providing an actual, accurate answer. "
-    "To show your personality, mix Thai and English together (about 50/50 Thai/English). "
+    "You are a super chill, informal 'Thai-glish' AI. Act like a close friend, not a personal assistant. "
+    "Your PRIMARY goal is to be helpful and directly answer your friend's question. Do not let the persona distract from providing an actual, accurate answer. "
+    "Mix transliterated Thai (written using the English alphabet ONLY, no Thai script) and English together (about 50/50 Thai/English). "
     "Use a friendly, casual, and laid-back tone like young people in Bangkok. "
-    "Be slightly bitchy and playful towards the user, like a close friend who loves to tease and lightly roast them, but keep it lighthearted and affectionate. "
+    "Use casual Thai pronouns like 'gu' (I/me) and 'mng' (you) from time to time, as appropriate for a close friend. "
+    "Be slightly bitchy and playful, like a close friend who loves to tease and lightly roast them, but keep it lighthearted and affectionate. "
     "Use casual Thai particles like 'na', 'krub', 'kub', 'pa', and 'laew' naturally in your sentences. "
-    "Keep the vibe relaxed and breezy. Keep your answers short, punchy, and concise."
+    "Keep the vibe relaxed and breezy. Keep your answers short, punchy, and concise. "
+    "Do NOT end your messages with open-ended customer-service questions like 'What's on your mind?', 'How can I help?', or 'Anything else?'. Just answer the question or make your comment and drop the mic like a normal text."
 )
 
 def get_system_instruction(chat_type: str) -> str:
     if chat_type == "guest" or chat_type == "group":
-        return SYSTEM_INSTRUCTION + " \n\n[System Note: You are currently in a GROUP chat (guest mode) where others can read the messages. However, you are still the personal assistant to the specific user talking to you. Focus entirely on answering the user directly and normally, without over-addressing the rest of the group.]"
+        return SYSTEM_INSTRUCTION + " \n\n[System Note: You are currently in a GROUP chat (guest mode) where others can read the messages. However, you are still primarily talking to your friend. Focus entirely on answering them directly and normally, without over-addressing the rest of the group.]"
     return SYSTEM_INSTRUCTION + " \n\n[System Note: You are currently talking in a PRIVATE 1-on-1 direct message.]"
 
 # ---------------------------------------------------------
@@ -91,6 +93,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 mime_type = "video/webm"
             else:
                 mime_type = "image/webp"
+        elif replied_msg.video_note:
+            file_id, mime_type = replied_msg.video_note.file_id, "video/mp4"
             
     if file_id:
         await msg.reply_text("⏳ Wait paep na... let me unroll this media gorn...", parse_mode="Markdown")
@@ -159,6 +163,9 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             mime_type = "image/webp"
         if not prompt_text: prompt_text = "Describe this sticker."
+    elif message.video_note:
+        file_id, mime_type = message.video_note.file_id, "video/mp4"
+        if not prompt_text: prompt_text = "Summarize this video note."
     else:
         return
 
@@ -188,7 +195,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------
 telegram_app.add_handler(CommandHandler("start", start_command))
 telegram_app.add_handler(MessageHandler(filters.LOCATION, location_handler))
-media_filters = (filters.PHOTO | filters.VIDEO | filters.VOICE | filters.AUDIO | filters.Document.ALL | filters.Sticker.ALL)
+media_filters = (filters.PHOTO | filters.VIDEO | filters.VOICE | filters.AUDIO | filters.Document.ALL | filters.Sticker.ALL | filters.VIDEO_NOTE)
 telegram_app.add_handler(MessageHandler(media_filters, media_handler))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
@@ -259,6 +266,10 @@ async def webhook_endpoint(request: Request):
                 else:
                     mime_type = "image/webp"
                 if not clean_prompt: clean_prompt = "Describe this sticker."
+            elif "video_note" in guest_msg:
+                file_id = guest_msg["video_note"]["file_id"]
+                mime_type = "video/mp4"
+                if not clean_prompt: clean_prompt = "Summarize this video note."
             elif "location" in guest_msg:
                 lat, lon = guest_msg["location"]["latitude"], guest_msg["location"]["longitude"]
                 clean_prompt = f"I pinned a map location at Lat: {lat}, Lon: {lon}. Briefly describe the area."
@@ -280,6 +291,9 @@ async def webhook_endpoint(request: Request):
                         mime_type = "video/webm"
                     else:
                         mime_type = "image/webp"
+                elif "video_note" in replied_msg:
+                    file_id = replied_msg["video_note"]["file_id"]
+                    mime_type = "video/mp4"
             
             if guest_query_id and (clean_prompt or file_id):
                 try:
