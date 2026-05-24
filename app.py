@@ -20,14 +20,14 @@ ai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 telegram_app = Application.builder().token(TOKEN).updater(None).build()
 
 SYSTEM_INSTRUCTION = (
-    "You are a super chill, informal AI. Act like a close friend, not a personal assistant. "
+    "You are a super chill, informal AI. Act like a close, slightly sassy friend, not a personal assistant. "
     "Your PRIMARY goal is to be helpful and directly answer your friend's question. Do not let the persona distract from providing an actual, accurate answer. "
     "Language mix: Use roughly 80% English, 15% transliterated Thai (Thai-glish using English alphabet ONLY), and 5% Singlish. "
     "Use a friendly, casual, and laid-back tone like young people in Bangkok. "
     "Drop pronouns where possible to sound more natural, but if needed use 'u' and 'I' sparingly. Do NOT use the Thai pronouns 'gu' or 'mng' at all. "
     "For the Singlish part, blend in sentence structure and vocabulary (e.g., ending sentences with 'lah', 'lor', 'meh', or saying 'can', 'cannot', 'also can' naturally). "
-    "Be slightly bitchy and playful, like a close friend who loves to tease and lightly roast them, but keep it lighthearted and affectionate. "
-    "Use casual Thai particles like 'na', 'krub', 'kub', 'pa', and 'laew' naturally in your sentences. "
+    "Dial up the 'bitchy close friend' vibe. Roast them, tease them playfully, throw a bit of shade, and act mildly annoyed but affectionate, like a sassy best friend. "
+    "Use casual Thai particles like 'krub', 'kub', 'pa', and 'laew' naturally, but NEVER use or end sentences with 'na'. "
     "Keep the vibe relaxed and breezy. EXTREMELY IMPORTANT: Keep your answers VERY short. Respond with as little as 1 word, up to a maximum of about 20 words, unless a longer explanation is absolutely necessary. "
     "Do NOT overuse exclamation marks (!) or question marks (?). Keep punctuation minimal and chill. "
     "Do NOT over-suggest things or offer unsolicited advice. Just answer exactly what was asked directly and passively. "
@@ -102,7 +102,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file_id, mime_type = replied_msg.video_note.file_id, "video/mp4"
             
     if file_id:
-        await msg.reply_text("⏳ Wait paep na... let me unroll this media gorn...", parse_mode="Markdown")
+        await msg.reply_text("⏳ Wait paep krub... let me unroll this media gorn...", parse_mode="Markdown")
         try:
             file = await context.bot.get_file(file_id)
             if file.file_size > 20971520:
@@ -122,7 +122,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(response.text, parse_mode="Markdown")
         except Exception as e:
             print(f"Reply Media Error: {e}")
-            await msg.reply_text("❌ Yikes, error krub. Can't read this media na pa. 🥲")
+            await msg.reply_text("❌ Yikes, error krub. Can't read this media pa. 🥲")
     else:
         ai_response = await process_with_gemini(prompt, chat_type)
         await msg.reply_text(ai_response, parse_mode="Markdown")
@@ -131,7 +131,7 @@ async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lat, lon = update.message.location.latitude, update.message.location.longitude
     chat_type = "group" if update.message.chat.type in ["group", "supergroup"] else "dm"
     prompt = f"I pinned a map location at Lat: {lat}, Lon: {lon}. Briefly describe the area."
-    await update.message.reply_text("🗺️ Du map paep na krub... (reading coordinates)")
+    await update.message.reply_text("🗺️ Du map paep krub... (reading coordinates)")
     ai_response = await process_with_gemini(prompt, chat_type)
     await update.message.reply_text(ai_response, parse_mode="Markdown")
 
@@ -141,7 +141,7 @@ async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     chat_type = "group" if message.chat.type in ["group", "supergroup"] else "dm"
-    await message.reply_text("⏳ Process paep na...")
+    await message.reply_text("⏳ Process paep krub...")
     
     file_id, mime_type = None, ""
     prompt_text = message.caption if message.caption else ""
@@ -193,7 +193,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(response.text, parse_mode="Markdown")
     except Exception as e:
         print(f"Media Error: {e}")
-        await message.reply_text("❌ Yikes, payload error krub. Try mai na pa. 🥲")
+        await message.reply_text("❌ Yikes, payload error krub. Try mai pa. 🥲")
 
 # ---------------------------------------------------------
 # 5. HANDLER REGISTRATION
@@ -322,7 +322,7 @@ async def webhook_endpoint(request: Request):
                         ai_reply = await process_with_gemini(clean_prompt, "guest")
                 except Exception as e:
                     print(f"Guest Processing Error: {e}")
-                    ai_reply = "Oops, error nid noi na krub. Mai pen rai, try again dai pa?"
+                    ai_reply = "Oops, error nid noi krub. Mai pen rai, try again dai pa?"
                 
                 # Per the documentation, answerGuestQuery requires 'result' to be an InlineQueryResult
                 inline_result = {
