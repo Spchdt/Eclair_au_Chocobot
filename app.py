@@ -30,7 +30,7 @@ SYSTEM_INSTRUCTION = (
 # 2. CORE GEMINI INFERENCE PIPELINE
 # ---------------------------------------------------------
 async def process_with_gemini(text: str) -> str:
-    """Submits textual input prompts directly to Gemini 3.5 Flash Lite."""
+    """Submits textual input prompts directly to Gemini."""
     try:
         response = ai_client.models.generate_content(
             model=GEMINI_MODEL,
@@ -151,14 +151,59 @@ async def webhook_endpoint(request: Request):
             
             # The API explicitly maps the interaction to a unique guest_query_id
             guest_query_id = guest_msg.get("guest_query_id")
-            text_prompt = guest_msg.get("text", "")
-
-            bot_username = telegram_app.bot.username or ""
-            clean_prompt = text_prompt.replace(f"@{bot_username}", "").strip()
             
-            if guest_query_id and clean_prompt:
-                # Ask Gemini to generate the response
-                ai_reply = await process_with_gemini(clean_prompt)
+            prompt_text = guest_msg.get("text") or guest_msg.get("caption") or ""
+            bot_username = telegram_app.bot.username or ""
+            clean_prompt = prompt_text.replace(f"@{bot_username}", "").strip()
+
+            file_id, mime_type = None, ""
+            if "photo" in guest_msg:
+                file_id = guest_msg["photo"][-1]["file_id"]
+                mime_type = "image/jpeg"
+                if not clean_prompt: clean_prompt = "Describe this image in detail."
+            elif "video" in guest_msg:
+                file_id = guest_msg["video"]["file_id"]
+                mime_type = guest_msg["video"].get("mime_type", "video/mp4")
+                if not clean_prompt: clean_prompt = "Summarize this video clip."
+            elif "voice" in guest_msg:
+                file_id = guest_msg["voice"]["file_id"]
+                mime_type = guest_msg["voice"].get("mime_type", "audio/ogg")
+                if not clean_prompt: clean_prompt = "Transcribe and answer this voice message."
+            elif "audio" in guest_msg:
+                file_id = guest_msg["audio"]["file_id"]
+                mime_type = guest_msg["audio"].get("mime_type", "audio/mpeg")
+                if not clean_prompt: clean_prompt = "Analyze this audio track."
+            elif "document" in guest_msg:
+                file_id = guest_msg["document"]["file_id"]
+                mime_type = guest_msg["document"].get("mime_type", "application/octet-stream")
+                if not clean_prompt: clean_prompt = "Summarize this document."
+            elif "location" in guest_msg:
+                lat, lon = guest_msg["location"]["latitude"], guest_msg["location"]["longitude"]
+                clean_prompt = f"I pinned a map location at Lat: {lat}, Lon: {lon}. Briefly describe the area."
+            
+            if guest_query_id and (clean_prompt or file_id):
+                try:
+                    if file_id:
+                        file = await telegram_app.bot.get_file(file_id)
+                        if file.file_size > 20971520:
+                            ai_reply = "⚠️ Whoa, that file is too doughy (over 20MB!). Trim it down. 🥟"
+                        else:
+                            file_bytes = await file.download_as_bytearray()
+                            gemini_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
+                            response = ai_client.models.generate_content(
+                                model=GEMINI_MODEL,
+                                contents=[gemini_part, clean_prompt],
+                                config=types.GenerateContentConfig(
+                                    system_instruction=SYSTEM_INSTRUCTION
+                                )
+                            )
+                            ai_reply = response.text
+                    else:
+                        # Standard text or location prompt
+                        ai_reply = await process_with_gemini(clean_prompt)
+                except Exception as e:
+                    print(f"Guest Processing Error: {e}")
+                    ai_reply = "Oops, looks like my dough didn't rise. Can you try again? 🥨"
                 
                 # Per the documentation, answerGuestQuery requires 'result' to be an InlineQueryResult
                 inline_result = {
