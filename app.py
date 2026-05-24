@@ -1,6 +1,7 @@
 import os
 import uuid
 import httpx
+import json
 from fastapi import FastAPI, Request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -22,39 +23,101 @@ telegram_app = Application.builder().token(TOKEN).updater(None).build()
 SYSTEM_INSTRUCTION = (
     "You are a super chill, informal AI. Act like a close, slightly sassy friend, not a personal assistant. "
     "Your PRIMARY goal is to be helpful and directly answer your friend's question. Do not let the persona distract from providing an actual, accurate answer. "
-    "Language mix: Use roughly 80% English, 15% transliterated Thai (Thai-glish using English alphabet ONLY), and 5% Singlish. "
+    "Language mix: Use roughly 90% English, 8% transliterated Thai (Thai-glish using English alphabet ONLY), and 2% Singlish. "
     "Use a friendly, casual, and laid-back tone like young people in Bangkok. "
     "Drop pronouns where possible to sound more natural, but if needed use 'u' and 'I' sparingly. Do NOT use the Thai pronouns 'gu' or 'mng' at all. "
-    "For the Singlish part, blend in sentence structure and vocabulary (e.g., ending sentences with 'lah', 'lor', 'meh', or saying 'can', 'cannot', 'also can' naturally). "
+    "For the Singlish part, blend in sentence structure and vocabulary (e.g., ending sentences with 'lor', 'meh', or saying 'can', 'cannot', 'also can' naturally), but NEVER use 'lah'. "
     "Dial up the 'bitchy close friend' vibe. Roast them, tease them playfully, throw a bit of shade, and act mildly annoyed but affectionate, like a sassy best friend. "
     "Use casual Thai particles like 'krub', 'kub', 'pa', and 'laew' naturally, but NEVER use or end sentences with 'na'. "
     "Keep the vibe relaxed and breezy. EXTREMELY IMPORTANT: Keep your answers VERY short. Respond with as little as 1 word, up to a maximum of about 20 words, unless a longer explanation is absolutely necessary. "
-    "Do NOT overuse exclamation marks (!) or question marks (?). Keep punctuation minimal and chill. "
+    "Do NOT use exclamation marks (!) or question marks (?) unless absolutely necessary. Keep punctuation minimal and chill. "
     "Do NOT over-suggest things or offer unsolicited advice. Just answer exactly what was asked directly and passively. "
     "Do NOT use long em dashes (—). "
     "Do NOT end your messages with open-ended customer-service questions like 'What's on your mind?', 'How can I help?', or 'Anything else?'. Just answer the question or make your comment and drop the mic like a normal text. "
     "If the user sends an image, video, or document, do NOT describe what is in it. A friend wouldn't describe an image back to you. Just react to it naturally or answer their specific question about it."
 )
 
-def get_system_instruction(chat_type: str) -> str:
+def get_system_instruction(chat_type: str, user_id: int = None) -> str:
+    base = SYSTEM_INSTRUCTION
+    if user_id:
+        user_str = str(user_id)
+        if user_str in memory_db["users"]:
+            facts = memory_db["users"][user_str].get("facts", "")
+            if facts:
+                base += f" \n\n[System Note: Known facts about this user: {facts}]"
+
     if chat_type == "guest" or chat_type == "group":
-        return SYSTEM_INSTRUCTION + " \n\n[System Note: You are currently in a GROUP chat (guest mode) where others can read the messages. However, you are still primarily talking to your friend. Focus entirely on answering them directly and normally, without over-addressing the rest of the group.]"
-    return SYSTEM_INSTRUCTION + " \n\n[System Note: You are currently talking in a PRIVATE 1-on-1 direct message.]"
+        return base + " \n\n[System Note: You are currently in a GROUP chat (guest mode) where others can read the messages. However, you are still primarily talking to your friend. Focus entirely on answering them directly and normally, without over-addressing the rest of the group.]"
+    return base + " \n\n[System Note: You are currently talking in a PRIVATE 1-on-1 direct message.]"
+
+# ---------------------------------------------------------
+# 1.5 MEMORY & HISTORY MANAGEMENT
+# ---------------------------------------------------------
+MEMORY_FILE = "memory.json"
+
+def load_memory():
+    if os.path.exists(MEMORY_FILE):
+        try:
+            with open(MEMORY_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"users": {}, "chats": {}}
+
+def save_memory(mem):
+    try:
+        with open(MEMORY_FILE, "w") as f:
+            json.dump(mem, f, indent=4)
+    except Exception as e:
+        print(f"Memory Save Error: {e}")
+
+memory_db = load_memory()
+
+def add_message_to_history(chat_id: int, role: str, text: str):
+    if not chat_id: return
+    chat_str = str(chat_id)
+    if chat_str not in memory_db["chats"]:
+        memory_db["chats"][chat_str] = []
+    
+    memory_db["chats"][chat_str].append({"role": role, "text": text})
+    
+    # Keep only last 10 messages (5 turns)
+    if len(memory_db["chats"][chat_str]) > 10:
+        memory_db["chats"][chat_str].pop(0)
+        
+    save_memory(memory_db)
+
+def get_chat_history(chat_id: int):
+    if not chat_id: return []
+    chat_str = str(chat_id)
+    history = []
+    for msg in memory_db["chats"].get(chat_str, []):
+        history.append(types.Content(role=msg["role"], parts=[types.Part.from_text(text=msg["text"])]))
+    return history
 
 # ---------------------------------------------------------
 # 2. CORE GEMINI INFERENCE PIPELINE
 # ---------------------------------------------------------
-async def process_with_gemini(text: str, chat_type: str = "dm") -> str:
+async def process_with_gemini(text: str, chat_type: str = "dm", chat_id: int = None, user_id: int = None) -> str:
     """Submits textual input prompts directly to Gemini."""
     try:
+        if chat_id:
+            add_message_to_history(chat_id, "user", text)
+            contents = get_chat_history(chat_id)
+        else:
+            contents = [types.Content(role="user", parts=[types.Part.from_text(text=text)])]
+
         response = ai_client.models.generate_content(
             model=GEMINI_MODEL,
-            contents=text,
+            contents=contents,
             config=types.GenerateContentConfig(
-                system_instruction=get_system_instruction(chat_type)
+                system_instruction=get_system_instruction(chat_type, user_id)
             )
         )
-        return response.text
+        ai_text = response.text
+        if chat_id:
+            add_message_to_history(chat_id, "model", ai_text)
+        return ai_text
     except Exception as e:
         print(f"Gemini Error: {e}")
         return "Oops, error nid noi na krub. Mai pen rai, try again dai pa?"
@@ -75,6 +138,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     prompt = msg.text
     chat_type = "group" if msg.chat.type in ["group", "supergroup"] else "dm"
+    chat_id = msg.chat.id
+    user_id = msg.from_user.id
     
     file_id, mime_type = None, ""
 
@@ -112,27 +177,37 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file_bytes = await file.download_as_bytearray()
             gemini_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
             
+            add_message_to_history(chat_id, "user", prompt or "[Sent media]")
+            contents = get_chat_history(chat_id)
+            # Inject the media as the first part of the newest user prompt
+            contents[-1].parts.insert(0, gemini_part)
+
             response = ai_client.models.generate_content(
                 model=GEMINI_MODEL,
-                contents=[gemini_part, prompt],
+                contents=contents,
                 config=types.GenerateContentConfig(
-                    system_instruction=get_system_instruction(chat_type)
+                    system_instruction=get_system_instruction(chat_type, user_id)
                 )
             )
-            await msg.reply_text(response.text, parse_mode="Markdown")
+            ai_reply = response.text
+            add_message_to_history(chat_id, "model", ai_reply)
+            
+            await msg.reply_text(ai_reply, parse_mode="Markdown")
         except Exception as e:
             print(f"Reply Media Error: {e}")
             await msg.reply_text("❌ Yikes, error krub. Can't read this media pa. 🥲")
     else:
-        ai_response = await process_with_gemini(prompt, chat_type)
+        ai_response = await process_with_gemini(prompt, chat_type, chat_id, user_id)
         await msg.reply_text(ai_response, parse_mode="Markdown")
 
 async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lat, lon = update.message.location.latitude, update.message.location.longitude
     chat_type = "group" if update.message.chat.type in ["group", "supergroup"] else "dm"
+    chat_id = update.message.chat.id
+    user_id = update.message.from_user.id
     prompt = f"I pinned a map location at Lat: {lat}, Lon: {lon}. Briefly describe the area."
     await update.message.reply_text("🗺️ Du map paep krub... (reading coordinates)")
-    ai_response = await process_with_gemini(prompt, chat_type)
+    ai_response = await process_with_gemini(prompt, chat_type, chat_id, user_id)
     await update.message.reply_text(ai_response, parse_mode="Markdown")
 
 # ---------------------------------------------------------
@@ -141,6 +216,8 @@ async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     chat_type = "group" if message.chat.type in ["group", "supergroup"] else "dm"
+    chat_id = message.chat.id
+    user_id = message.from_user.id
     await message.reply_text("⏳ Process paep krub...")
     
     file_id, mime_type = None, ""
@@ -183,14 +260,21 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_bytes = await file.download_as_bytearray()
         gemini_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
         
+        add_message_to_history(chat_id, "user", prompt_text)
+        contents = get_chat_history(chat_id)
+        contents[-1].parts.insert(0, gemini_part)
+        
         response = ai_client.models.generate_content(
             model=GEMINI_MODEL,
-            contents=[gemini_part, prompt_text],
+            contents=contents,
             config=types.GenerateContentConfig(
-                system_instruction=get_system_instruction(chat_type)
+                system_instruction=get_system_instruction(chat_type, user_id)
             )
         )
-        await message.reply_text(response.text, parse_mode="Markdown")
+        ai_reply = response.text
+        add_message_to_history(chat_id, "model", ai_reply)
+        
+        await message.reply_text(ai_reply, parse_mode="Markdown")
     except Exception as e:
         print(f"Media Error: {e}")
         await message.reply_text("❌ Yikes, payload error krub. Try mai pa. 🥲")
@@ -228,8 +312,10 @@ async def webhook_endpoint(request: Request):
         if "guest_message" in data:
             guest_msg = data["guest_message"]
             
-            # The API explicitly maps the interaction to a unique guest_query_id
+            # Extract identifiers for history & custom instructions
             guest_query_id = guest_msg.get("guest_query_id")
+            user_id = guest_msg.get("from", {}).get("id")
+            chat_id = guest_msg.get("chat", {}).get("id") or guest_query_id
             
             prompt_text = guest_msg.get("text") or guest_msg.get("caption") or ""
             bot_username = telegram_app.bot.username or ""
@@ -309,17 +395,23 @@ async def webhook_endpoint(request: Request):
                         else:
                             file_bytes = await file.download_as_bytearray()
                             gemini_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
+                            
+                            add_message_to_history(chat_id, "user", clean_prompt or "[Sent a media file]")
+                            contents = get_chat_history(chat_id)
+                            contents[-1].parts.insert(0, gemini_part)
+                            
                             response = ai_client.models.generate_content(
                                 model=GEMINI_MODEL,
-                                contents=[gemini_part, clean_prompt],
+                                contents=contents,
                                 config=types.GenerateContentConfig(
-                                    system_instruction=get_system_instruction("guest")
+                                    system_instruction=get_system_instruction("guest", user_id)
                                 )
                             )
                             ai_reply = response.text
+                            add_message_to_history(chat_id, "model", ai_reply)
                     else:
                         # Standard text or location prompt
-                        ai_reply = await process_with_gemini(clean_prompt, "guest")
+                        ai_reply = await process_with_gemini(clean_prompt, "guest", chat_id, user_id)
                 except Exception as e:
                     print(f"Guest Processing Error: {e}")
                     ai_reply = "Oops, error nid noi krub. Mai pen rai, try again dai pa?"
