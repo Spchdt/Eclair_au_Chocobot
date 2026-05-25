@@ -37,17 +37,41 @@ SYSTEM_INSTRUCTION = (
     "If the user sends an image, video, or document, do NOT describe what is in it. A friend wouldn't describe an image back to you. Just react to it naturally or answer their specific question about it."
 )
 
+SECRETARY_INSTRUCTION = (
+    "You are an AI replying to messages on my personal account on my behalf. "
+    "Crucially, you must answer from MY point of view (POV) as if you are me, or my sassy stand-in. "
+    "You must use the exact same super chill, informal, sassy Thai-glish personality as my standard AI persona. "
+    "Language mix: Use roughly 90% English, 8% transliterated Thai (Thai-glish using English alphabet ONLY), and 2% Singlish. "
+    "Drop pronouns where possible to sound more natural. Do NOT use the Thai pronouns 'gu' or 'mng' at all. "
+    "For the Singlish part, blend in sentence structure and vocabulary, but NEVER use 'lah'. "
+    "Dial up the 'bitchy close friend' vibe. Roast them, tease them playfully, and act mildly annoyed but affectionate. "
+    "Use casual Thai particles like 'krub', 'kub', 'pa', and 'laew' naturally, but NEVER use or end sentences with 'na'. "
+    "Keep the vibe relaxed and breezy. EXTREMELY IMPORTANT: Keep your answers VERY short. Respond with as little as 1 word, up to a maximum of about 20 words. "
+    "Do NOT use exclamation marks (!) or question marks (?) unless absolutely necessary. Keep punctuation minimal and chill. "
+    "If the user sends an image, video, or document, do NOT describe what is in it. Just react to it naturally or answer their specific question about it."
+)
+
 def get_system_instruction(chat_type: str, user_id: int = None) -> str:
-    base = SYSTEM_INSTRUCTION
+    mode = "friend"
+    user_facts = ""
     if user_id:
         user_str = str(user_id)
         if user_str in memory_db["users"]:
-            facts = memory_db["users"][user_str].get("facts", "")
-            if facts:
-                base += f" \n\n[System Note: Known facts about this user: {facts}]"
+            mode = memory_db["users"][user_str].get("mode", "friend")
+            user_facts = memory_db["users"][user_str].get("facts", "")
+
+    if chat_type == "business":
+        mode = "secretary"
+
+    base = SECRETARY_INSTRUCTION if mode == "secretary" else SYSTEM_INSTRUCTION
+
+    if user_facts:
+        base += f" \n\n[System Note: Known facts about this user: {user_facts}]"
 
     if chat_type == "guest" or chat_type == "group":
-        return base + " \n\n[System Note: You are currently in a GROUP chat (guest mode) where others can read the messages. However, you are still primarily talking to your friend. Focus entirely on answering them directly and normally, without over-addressing the rest of the group.]"
+        return base + " \n\n[System Note: You are currently in a GROUP chat (guest mode). Focus entirely on answering the user directly and normally.]"
+    elif chat_type == "business":
+        return base + " \n\n[System Note: You are responding to direct messages on my personal Telegram account. Answer from MY POV using the sassy Thai-glish tone.]"
     return base + " \n\n[System Note: You are currently talking in a PRIVATE 1-on-1 direct message.]"
 
 # ---------------------------------------------------------
@@ -130,14 +154,30 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 *Sawasdee krub!*\n\n"
         "I'm your super chill AI friend laew.\n"
         "Tag me with `@username query`, jing jing kor send me pics, voice notes, and docs dai mhod na. "
-        "Come chat gun ter! ✨"
+        "Come chat gun ter! ✨\n\n"
+        "Mode commands: /secretary (Professional) | /friend (Sassy)"
     )
-    await update.message.reply_text(welcome_message, parse_mode="Markdown")
+    await update.effective_message.reply_text(welcome_message, parse_mode="Markdown")
+
+async def set_secretary_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_str = str(update.effective_user.id)
+    if user_str not in memory_db["users"]: memory_db["users"][user_str] = {}
+    memory_db["users"][user_str]["mode"] = "secretary"
+    save_memory(memory_db)
+    await update.effective_message.reply_text("💼 Secretary mode activated. I will now act as your professional assistant.")
+
+async def set_friend_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_str = str(update.effective_user.id)
+    if user_str not in memory_db["users"]: memory_db["users"][user_str] = {}
+    memory_db["users"][user_str]["mode"] = "friend"
+    save_memory(memory_db)
+    await update.effective_message.reply_text("😎 Friend mode activated. Sassy time laew!")
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    prompt = msg.text
-    chat_type = "group" if msg.chat.type in ["group", "supergroup"] else "dm"
+    msg = update.effective_message
+    if not msg: return
+    prompt = msg.text or ""
+    chat_type = "business" if update.business_message else ("group" if msg.chat.type in ["group", "supergroup"] else "dm")
     chat_id = msg.chat.id
     user_id = msg.from_user.id
     
@@ -167,11 +207,15 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file_id, mime_type = replied_msg.video_note.file_id, "video/mp4"
             
     if file_id:
-        await msg.reply_text("⏳ Wait paep krub... let me unroll this media gorn...", parse_mode="Markdown")
+        wait_text = "⏳ Processing media..." if chat_type == "business" else "⏳ Wait paep krub... let me unroll this media gorn..."
+        error_size = "⚠️ File is too large (over 20MB)." if chat_type == "business" else "⚠️ Oh ho! Yai mak krub (over 20MB!). Mai wai laew."
+        error_media = "❌ Unable to process this media." if chat_type == "business" else "❌ Yikes, error krub. Can't read this media pa. 🥲"
+
+        await msg.reply_text(wait_text, parse_mode="Markdown")
         try:
             file = await context.bot.get_file(file_id)
             if file.file_size > 20971520:
-                await msg.reply_text("⚠️ Oh ho! Yai mak krub (over 20MB!). Mai wai laew.")
+                await msg.reply_text(error_size)
                 return
 
             file_bytes = await file.download_as_bytearray()
@@ -195,30 +239,37 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(ai_reply, parse_mode="Markdown")
         except Exception as e:
             print(f"Reply Media Error: {e}")
-            await msg.reply_text("❌ Yikes, error krub. Can't read this media pa. 🥲")
+            await msg.reply_text(error_media)
     else:
         ai_response = await process_with_gemini(prompt, chat_type, chat_id, user_id)
         await msg.reply_text(ai_response, parse_mode="Markdown")
 
 async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lat, lon = update.message.location.latitude, update.message.location.longitude
-    chat_type = "group" if update.message.chat.type in ["group", "supergroup"] else "dm"
-    chat_id = update.message.chat.id
-    user_id = update.message.from_user.id
+    msg = update.effective_message
+    if not msg: return
+    lat, lon = msg.location.latitude, msg.location.longitude
+    chat_type = "business" if update.business_message else ("group" if msg.chat.type in ["group", "supergroup"] else "dm")
+    chat_id = msg.chat.id
+    user_id = msg.from_user.id
     prompt = f"I pinned a map location at Lat: {lat}, Lon: {lon}. Briefly describe the area."
-    await update.message.reply_text("🗺️ Du map paep krub... (reading coordinates)")
+    
+    wait_msg = "🗺️ Reading coordinates..." if chat_type == "business" else "🗺️ Du map paep krub... (reading coordinates)"
+    await msg.reply_text(wait_msg)
     ai_response = await process_with_gemini(prompt, chat_type, chat_id, user_id)
-    await update.message.reply_text(ai_response, parse_mode="Markdown")
+    await msg.reply_text(ai_response, parse_mode="Markdown")
 
 # ---------------------------------------------------------
 # 4. MULTIMODAL MEDIA HANDLER
 # ---------------------------------------------------------
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    chat_type = "group" if message.chat.type in ["group", "supergroup"] else "dm"
+    message = update.effective_message
+    if not message: return
+    chat_type = "business" if update.business_message else ("group" if message.chat.type in ["group", "supergroup"] else "dm")
     chat_id = message.chat.id
     user_id = message.from_user.id
-    await message.reply_text("⏳ Process paep krub...")
+    
+    wait_msg = "⏳ Processing..." if chat_type == "business" else "⏳ Process paep krub..."
+    await message.reply_text(wait_msg)
     
     file_id, mime_type = None, ""
     prompt_text = message.caption if message.caption else ""
@@ -277,12 +328,15 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(ai_reply, parse_mode="Markdown")
     except Exception as e:
         print(f"Media Error: {e}")
-        await message.reply_text("❌ Yikes, payload error krub. Try mai pa. 🥲")
+        error_media = "❌ Unable to process this media." if chat_type == "business" else "❌ Yikes, payload error krub. Try mai pa. 🥲"
+        await message.reply_text(error_media)
 
 # ---------------------------------------------------------
 # 5. HANDLER REGISTRATION
 # ---------------------------------------------------------
 telegram_app.add_handler(CommandHandler("start", start_command))
+telegram_app.add_handler(CommandHandler("secretary", set_secretary_mode))
+telegram_app.add_handler(CommandHandler("friend", set_friend_mode))
 telegram_app.add_handler(MessageHandler(filters.LOCATION, location_handler))
 media_filters = (filters.PHOTO | filters.VIDEO | filters.VOICE | filters.AUDIO | filters.Document.ALL | filters.Sticker.ALL | filters.VIDEO_NOTE)
 telegram_app.add_handler(MessageHandler(media_filters, media_handler))
@@ -295,8 +349,8 @@ telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_ha
 async def on_startup():
     await telegram_app.initialize()
     if WEBHOOK_URL:
-        # Crucial: Explicitly demand 'guest_message' events from Telegram's servers
-        allowed_updates = ["message", "edited_message", "callback_query", "guest_message"]
+        # Crucial: Explicitly demand 'guest_message' and 'business_message' events from Telegram's servers
+        allowed_updates = ["message", "edited_message", "callback_query", "guest_message", "business_message", "business_connection"]
         await telegram_app.bot.set_webhook(
             url=f"https://{WEBHOOK_URL}/webhook",
             allowed_updates=allowed_updates
@@ -308,7 +362,7 @@ async def webhook_endpoint(request: Request):
     try:
         data = await request.json()
 
-        # Check if Telegram is handing us a Bot API 10.0 'guest_message'
+        # 1. Handle API 10.0 'guest_message' fallback
         if "guest_message" in data:
             guest_msg = data["guest_message"]
             
@@ -440,7 +494,37 @@ async def webhook_endpoint(request: Request):
                 
                 return {"status": "guest_replied_natively"}
 
-        # If it's a standard direct message, pipe it through the normal python wrapper
+        # 2. Handle API 10.0 'business_connection' fallback
+        if "business_connection" in data:
+            bc = data["business_connection"]
+            conn_id = bc.get("id")
+            can_reply = bc.get("can_reply", False)
+            print(f"Business Connection {conn_id} received. Can reply: {can_reply}")
+            return {"ok": True}
+        
+        # 3. Handle API 10.0 'business_message' fallback
+        if "business_message" in data:
+            bm = data["business_message"]
+            conn_id = bm.get("business_connection_id")
+            user_id = bm.get("from", {}).get("id")
+            chat_id = bm.get("chat", {}).get("id")
+            text = bm.get("text", "")
+            if text and user_id and chat_id and conn_id:
+                reply = await process_with_gemini(text, chat_type="business", chat_id=chat_id, user_id=user_id)
+                # We bypass the python wrapper entirely and hit Telegram's API natively
+                async with httpx.AsyncClient() as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+                        json={
+                            "chat_id": chat_id, 
+                            "text": reply, 
+                            "parse_mode": "Markdown",
+                            "business_connection_id": conn_id
+                        }
+                    )
+            return {"ok": True}
+
+        # 4. Standard Handlers
         update = Update.de_json(data, telegram_app.bot)
         await telegram_app.process_update(update)
         
