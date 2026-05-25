@@ -508,20 +508,89 @@ async def webhook_endpoint(request: Request):
             conn_id = bm.get("business_connection_id")
             user_id = bm.get("from", {}).get("id")
             chat_id = bm.get("chat", {}).get("id")
-            text = bm.get("text", "")
-            if text and user_id and chat_id and conn_id:
-                reply = await process_with_gemini(text, chat_type="business", chat_id=chat_id, user_id=user_id)
-                # We bypass the python wrapper entirely and hit Telegram's API natively
-                async with httpx.AsyncClient() as client:
-                    await client.post(
-                        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                        json={
-                            "chat_id": chat_id, 
-                            "text": reply, 
-                            "parse_mode": "Markdown",
-                            "business_connection_id": conn_id
-                        }
-                    )
+            
+            prompt_text = bm.get("text") or bm.get("caption") or ""
+            bot_username = telegram_app.bot.username or ""
+            clean_prompt = prompt_text.replace(f"@{bot_username}", "").strip()
+
+            file_id, mime_type = None, ""
+            
+            if "photo" in bm:
+                file_id = bm["photo"][-1]["file_id"]
+                mime_type = "image/jpeg"
+                if not clean_prompt: clean_prompt = "I just sent you this image."
+            elif "video" in bm:
+                file_id = bm["video"]["file_id"]
+                mime_type = bm["video"].get("mime_type", "video/mp4")
+                if not clean_prompt: clean_prompt = "I just sent you this video clip."
+            elif "voice" in bm:
+                file_id = bm["voice"]["file_id"]
+                mime_type = bm["voice"].get("mime_type", "audio/ogg")
+                if not clean_prompt: clean_prompt = "I just sent you this voice message."
+            elif "audio" in bm:
+                file_id = bm["audio"]["file_id"]
+                mime_type = bm["audio"].get("mime_type", "audio/mpeg")
+                if not clean_prompt: clean_prompt = "I just sent you this audio track."
+            elif "document" in bm:
+                file_id = bm["document"]["file_id"]
+                mime_type = bm["document"].get("mime_type", "application/octet-stream")
+                if not clean_prompt: clean_prompt = "I just sent you this document."
+            elif "sticker" in bm:
+                file_id = bm["sticker"]["file_id"]
+                if bm["sticker"].get("is_video"):
+                    mime_type = "video/webm"
+                else:
+                    mime_type = "image/webp"
+                if not clean_prompt: clean_prompt = "I just sent you this sticker."
+            elif "video_note" in bm:
+                file_id = bm["video_note"]["file_id"]
+                mime_type = "video/mp4"
+                if not clean_prompt: clean_prompt = "I just sent you this video note (bubble format)."
+            elif "location" in bm:
+                lat, lon = bm["location"]["latitude"], bm["location"]["longitude"]
+                clean_prompt = f"I pinned a map location at Lat: {lat}, Lon: {lon}. Briefly describe the area."
+
+            if conn_id and chat_id and user_id:
+                try:
+                    if file_id:
+                        file = await telegram_app.bot.get_file(file_id)
+                        if file.file_size > 20971520:
+                            reply = "⚠️ File is too large (over 20MB)."
+                        else:
+                            file_bytes = await file.download_as_bytearray()
+                            gemini_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
+                            
+                            add_message_to_history(chat_id, "user", clean_prompt or "[Sent a media file]")
+                            contents = get_chat_history(chat_id)
+                            contents[-1].parts.insert(0, gemini_part)
+                            
+                            response = ai_client.models.generate_content(
+                                model=GEMINI_MODEL,
+                                contents=contents,
+                                config=types.GenerateContentConfig(
+                                    system_instruction=get_system_instruction("business", user_id)
+                                )
+                            )
+                            reply = response.text
+                            add_message_to_history(chat_id, "model", reply)
+                    elif clean_prompt:
+                        reply = await process_with_gemini(clean_prompt, chat_type="business", chat_id=chat_id, user_id=user_id)
+                    else:
+                        reply = ""
+
+                    if reply:
+                        async with httpx.AsyncClient() as client:
+                            await client.post(
+                                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+                                json={
+                                    "chat_id": chat_id, 
+                                    "text": reply, 
+                                    "parse_mode": "Markdown",
+                                    "business_connection_id": conn_id
+                                }
+                            )
+                except Exception as e:
+                    print(f"Business Processing Error: {e}")
             return {"ok": True}
 
         # 4. Standard Handlers
