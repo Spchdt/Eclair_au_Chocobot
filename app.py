@@ -2,6 +2,7 @@ import os
 import uuid
 import httpx
 import json
+import re
 from fastapi import FastAPI, Request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -34,7 +35,8 @@ SYSTEM_INSTRUCTION = (
     "Do NOT over-suggest things or offer unsolicited advice. Just answer exactly what was asked directly and passively. "
     "Do NOT use long em dashes (—). "
     "Do NOT end your messages with open-ended customer-service questions like 'What's on your mind?', 'How can I help?', or 'Anything else?'. Just answer the question or make your comment and drop the mic like a normal text. "
-    "If the user sends an image, video, or document, do NOT describe what is in it. A friend wouldn't describe an image back to you. Just react to it naturally or answer their specific question about it."
+    "If the user sends an image, video, or document, do NOT describe what is in it. A friend wouldn't describe an image back to you. Just react to it naturally or answer their specific question about it. "
+    "REACTIONS: You can natively react to messages without texting back! If a verbal reply isn't necessary, reply with exactly [REACT: <emoji>] (e.g., [REACT: 🙄], [REACT: 🔥]) and nothing else."
 )
 
 SECRETARY_INSTRUCTION = (
@@ -48,7 +50,8 @@ SECRETARY_INSTRUCTION = (
     "Use casual Thai particles like 'krub', 'kub', 'pa', and 'laew' naturally, but NEVER use or end sentences with 'na'. "
     "Keep the vibe relaxed and breezy. EXTREMELY IMPORTANT: Keep your answers VERY short. Respond with as little as 1 word, up to a maximum of about 20 words. "
     "Do NOT use exclamation marks (!) or question marks (?) unless absolutely necessary. Keep punctuation minimal and chill. "
-    "If the user sends an image, video, or document, do NOT describe what is in it. Just react to it naturally or answer their specific question about it."
+    "If the user sends an image, video, or document, do NOT describe what is in it. Just react to it naturally or answer their specific question about it. "
+    "REACTIONS: You can natively react to messages without texting back! If a verbal reply isn't necessary, reply with exactly [REACT: <emoji>] (e.g., [REACT: 🙄], [REACT: 🔥]) and nothing else."
 )
 
 def get_system_instruction(chat_type: str, user_id: int = None) -> str:
@@ -73,6 +76,39 @@ def get_system_instruction(chat_type: str, user_id: int = None) -> str:
     elif chat_type == "business":
         return base + " \n\n[System Note: You are responding to direct messages on my personal Telegram account. Answer from MY POV using the sassy Thai-glish tone.]"
     return base + " \n\n[System Note: You are currently talking in a PRIVATE 1-on-1 direct message.]"
+
+# ---------------------------------------------------------
+# 1.3 TELEGRAM ACTION HELPERS
+# ---------------------------------------------------------
+async def set_typing(chat_id: int, business_conn_id: str = None):
+    try:
+        async with httpx.AsyncClient() as client:
+            payload = {"chat_id": chat_id, "action": "typing"}
+            if business_conn_id: payload["business_connection_id"] = business_conn_id
+            await client.post(f"https://api.telegram.org/bot{TOKEN}/sendChatAction", json=payload)
+    except Exception as e: 
+        print(f"Typing Error: {e}")
+
+async def set_reaction(chat_id: int, message_id: int, emoji: str):
+    try:
+        async with httpx.AsyncClient() as client:
+            payload = {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "reaction": [{"type": "emoji", "emoji": emoji}]
+            }
+            await client.post(f"https://api.telegram.org/bot{TOKEN}/setMessageReaction", json=payload)
+    except Exception as e:
+        print(f"Reaction Error: {e}")
+
+async def process_ai_reply(reply_text: str, chat_id: int, message_id: int = None) -> str:
+    """Extracts internal tags [REACT: X], fires the reaction, and returns the cleaned text to send."""
+    match = re.search(r"\[REACT:\s*(.+?)\]", reply_text)
+    if match and message_id:
+        emoji = match.group(1).strip()
+        await set_reaction(chat_id, message_id, emoji)
+        reply_text = re.sub(r"\[REACT:\s*(.+?)\]", "", reply_text).strip()
+    return reply_text
 
 # ---------------------------------------------------------
 # 1.5 MEMORY & HISTORY MANAGEMENT
@@ -180,6 +216,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_type = "business" if update.business_message else ("group" if msg.chat.type in ["group", "supergroup"] else "dm")
     chat_id = msg.chat.id
     user_id = msg.from_user.id
+    sender_name = msg.from_user.first_name or "Someone"
+    
+    if prompt:
+        prompt = f"[{sender_name} says]: {prompt}"
     
     file_id, mime_type = None, ""
 
@@ -226,6 +266,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Inject the media as the first part of the newest user prompt
             contents[-1].parts.insert(0, gemini_part)
 
+            await set_typing(chat_id)
             response = ai_client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=contents,
@@ -236,13 +277,18 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ai_reply = response.text
             add_message_to_history(chat_id, "model", ai_reply)
             
-            await msg.reply_text(ai_reply, parse_mode="Markdown")
+            ai_reply = await process_ai_reply(ai_reply, chat_id, msg.message_id)
+            if ai_reply:
+                await msg.reply_text(ai_reply, parse_mode="Markdown")
         except Exception as e:
             print(f"Reply Media Error: {e}")
             await msg.reply_text(error_media)
     else:
+        await set_typing(chat_id)
         ai_response = await process_with_gemini(prompt, chat_type, chat_id, user_id)
-        await msg.reply_text(ai_response, parse_mode="Markdown")
+        ai_response = await process_ai_reply(ai_response, chat_id, msg.message_id)
+        if ai_response:
+            await msg.reply_text(ai_response, parse_mode="Markdown")
 
 async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
@@ -255,8 +301,13 @@ async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     wait_msg = "🗺️ Reading coordinates..." if chat_type == "business" else "🗺️ Du map paep krub... (reading coordinates)"
     await msg.reply_text(wait_msg)
+    
+    await set_typing(chat_id)
     ai_response = await process_with_gemini(prompt, chat_type, chat_id, user_id)
-    await msg.reply_text(ai_response, parse_mode="Markdown")
+    ai_response = await process_ai_reply(ai_response, chat_id, msg.message_id)
+    
+    if ai_response:
+        await msg.reply_text(ai_response, parse_mode="Markdown")
 
 # ---------------------------------------------------------
 # 4. MULTIMODAL MEDIA HANDLER
@@ -315,6 +366,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         contents = get_chat_history(chat_id)
         contents[-1].parts.insert(0, gemini_part)
         
+        await set_typing(chat_id)
         response = ai_client.models.generate_content(
             model=GEMINI_MODEL,
             contents=contents,
@@ -325,7 +377,9 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ai_reply = response.text
         add_message_to_history(chat_id, "model", ai_reply)
         
-        await message.reply_text(ai_reply, parse_mode="Markdown")
+        ai_reply = await process_ai_reply(ai_reply, chat_id, message.message_id)
+        if ai_reply:
+            await message.reply_text(ai_reply, parse_mode="Markdown")
     except Exception as e:
         print(f"Media Error: {e}")
         error_media = "❌ Unable to process this media." if chat_type == "business" else "❌ Yikes, payload error krub. Try mai pa. 🥲"
@@ -368,12 +422,18 @@ async def webhook_endpoint(request: Request):
             
             # Extract identifiers for history & custom instructions
             guest_query_id = guest_msg.get("guest_query_id")
-            user_id = guest_msg.get("from", {}).get("id")
+            user_info = guest_msg.get("from", {})
+            user_id = user_info.get("id")
+            sender_name = user_info.get("first_name", "Someone")
             chat_id = guest_msg.get("chat", {}).get("id") or guest_query_id
             
             prompt_text = guest_msg.get("text") or guest_msg.get("caption") or ""
             bot_username = telegram_app.bot.username or ""
             clean_prompt = prompt_text.replace(f"@{bot_username}", "").strip()
+
+            # Prepend sender name so Gemini knows who is speaking
+            if clean_prompt:
+                clean_prompt = f"[{sender_name} says]: {clean_prompt}"
 
             if "reply_to_message" in guest_msg:
                 replied_msg = guest_msg["reply_to_message"]
@@ -442,6 +502,7 @@ async def webhook_endpoint(request: Request):
             
             if guest_query_id and (clean_prompt or file_id):
                 try:
+                    await set_typing(chat_id)
                     if file_id:
                         file = await telegram_app.bot.get_file(file_id)
                         if file.file_size > 20971520:
@@ -470,6 +531,11 @@ async def webhook_endpoint(request: Request):
                     print(f"Guest Processing Error: {e}")
                     ai_reply = "Oops, error nid noi krub. Mai pen rai, try again dai pa?"
                 
+                # NOTE: answerGuestQuery does not support setting message reactions or blank messages, 
+                # so we strip tags if they appear but force it to send a text reply.
+                ai_reply = re.sub(r"\[REACT:\s*(.+?)\]", "✨", ai_reply).strip()
+                if not ai_reply: ai_reply = "✨"
+
                 # Per the documentation, answerGuestQuery requires 'result' to be an InlineQueryResult
                 inline_result = {
                     "type": "article",
@@ -506,12 +572,18 @@ async def webhook_endpoint(request: Request):
         if "business_message" in data:
             bm = data["business_message"]
             conn_id = bm.get("business_connection_id")
-            user_id = bm.get("from", {}).get("id")
+            user_info = bm.get("from", {})
+            user_id = user_info.get("id")
+            sender_name = user_info.get("first_name", "Someone")
             chat_id = bm.get("chat", {}).get("id")
             
             prompt_text = bm.get("text") or bm.get("caption") or ""
             bot_username = telegram_app.bot.username or ""
             clean_prompt = prompt_text.replace(f"@{bot_username}", "").strip()
+
+            # Prepend sender name so Gemini knows who is speaking
+            if clean_prompt:
+                clean_prompt = f"[{sender_name} says]: {clean_prompt}"
 
             file_id, mime_type = None, ""
             
@@ -551,7 +623,9 @@ async def webhook_endpoint(request: Request):
                 clean_prompt = f"I pinned a map location at Lat: {lat}, Lon: {lon}. Briefly describe the area."
 
             if conn_id and chat_id and user_id:
+                msg_id = bm.get("message_id")
                 try:
+                    await set_typing(chat_id, conn_id)
                     if file_id:
                         file = await telegram_app.bot.get_file(file_id)
                         if file.file_size > 20971520:
@@ -577,6 +651,8 @@ async def webhook_endpoint(request: Request):
                         reply = await process_with_gemini(clean_prompt, chat_type="business", chat_id=chat_id, user_id=user_id)
                     else:
                         reply = ""
+
+                    reply = await process_ai_reply(reply, chat_id, msg_id)
 
                     if reply:
                         async with httpx.AsyncClient() as client:
