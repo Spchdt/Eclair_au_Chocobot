@@ -3,6 +3,7 @@ import uuid
 import httpx
 import json
 import re
+import asyncio
 from fastapi import FastAPI, Request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -16,6 +17,7 @@ app = FastAPI()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+BACKUP_CHANNEL_ID = os.getenv("BACKUP_CHANNEL_ID")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 ai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
@@ -114,6 +116,7 @@ async def process_ai_reply(reply_text: str, chat_id: int, message_id: int = None
 # 1.5 MEMORY & HISTORY MANAGEMENT
 # ---------------------------------------------------------
 MEMORY_FILE = "memory.json"
+memory_needs_backup = False
 
 def load_memory():
     if os.path.exists(MEMORY_FILE):
@@ -125,13 +128,36 @@ def load_memory():
     return {"users": {}, "chats": {}}
 
 def save_memory(mem):
+    global memory_needs_backup
     try:
         with open(MEMORY_FILE, "w") as f:
             json.dump(mem, f, indent=4)
+        memory_needs_backup = True
     except Exception as e:
         print(f"Memory Save Error: {e}")
 
 memory_db = load_memory()
+
+async def memory_backup_loop():
+    global memory_needs_backup
+    while True:
+        await asyncio.sleep(60) # Backup every 60 seconds if changed
+        if memory_needs_backup and BACKUP_CHANNEL_ID:
+            try:
+                with open(MEMORY_FILE, "rb") as f:
+                    msg = await telegram_app.bot.send_document(
+                        chat_id=BACKUP_CHANNEL_ID,
+                        document=f,
+                        caption="Database Backup"
+                    )
+                await telegram_app.bot.pin_chat_message(
+                    chat_id=BACKUP_CHANNEL_ID,
+                    message_id=msg.message_id,
+                    disable_notification=True
+                )
+                memory_needs_backup = False
+            except Exception as e:
+                print(f"Backup Error: {e}")
 
 def add_message_to_history(chat_id: int, role: str, text: str):
     if not chat_id: return
@@ -401,7 +427,24 @@ telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_ha
 # ---------------------------------------------------------
 @app.on_event("startup")
 async def on_startup():
+    global memory_db
     await telegram_app.initialize()
+    
+    if BACKUP_CHANNEL_ID:
+        try:
+            chat = await telegram_app.bot.get_chat(BACKUP_CHANNEL_ID)
+            if chat.pinned_message and chat.pinned_message.document:
+                file = await telegram_app.bot.get_file(chat.pinned_message.document.file_id)
+                file_bytes = await file.download_as_bytearray()
+                with open(MEMORY_FILE, "wb") as f:
+                    f.write(file_bytes)
+                memory_db = load_memory()
+                print("✅ Memory restored from Telegram Backup Channel!")
+        except Exception as e:
+            print(f"⚠️ Failed to restore memory from Telegram: {e}")
+            
+    asyncio.create_task(memory_backup_loop())
+    
     if WEBHOOK_URL:
         # Crucial: Explicitly demand 'guest_message' and 'business_message' events from Telegram's servers
         allowed_updates = ["message", "edited_message", "callback_query", "guest_message", "business_message", "business_connection"]
