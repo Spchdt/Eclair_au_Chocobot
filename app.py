@@ -53,7 +53,6 @@ SECRETARY_INSTRUCTION = (
     "Keep the vibe relaxed and breezy. EXTREMELY IMPORTANT: Keep your answers VERY short. Respond with as little as 1 word, up to a maximum of about 20 words. "
     "Do NOT use exclamation marks (!) or question marks (?) unless absolutely necessary. Keep punctuation minimal and chill. "
     "If the user sends an image, video, or document, do NOT describe what is in it. Just react to it naturally or answer their specific question about it. "
-    "REACTIONS: You can natively react to messages without texting back! If a verbal reply isn't necessary, reply with exactly [REACT: <emoji>] and nothing else. You MUST ONLY use one of these exact emojis: 👍, ❤️, 🤡, 😭, ☃️, 😞, 😱, 🤯, 🐳, 😡, 🙊, 💅, ❤️‍🔥, 😆, 😍, 🔥."
 )
 
 def get_system_instruction(chat_type: str, user_id: int = None) -> str:
@@ -103,12 +102,25 @@ async def set_reaction(chat_id: int, message_id: int, emoji: str):
     except Exception as e:
         print(f"Reaction Error: {e}")
 
-async def process_ai_reply(reply_text: str, chat_id: int, message_id: int = None) -> str:
-    """Extracts internal tags [REACT: X], fires the reaction, and returns the cleaned text to send."""
+async def process_ai_reply(reply_text: str, chat_id: int, message_id: int = None, chat_type: str = "dm", user_id: int = None) -> str:
+    """Extracts internal tags [REACT: X], fires the reaction (unless in secretary mode), and returns the cleaned text to send.
+
+    When the user's mode is `secretary` (or the chat_type is 'business'), do NOT send Telegram reactions; just strip the tag.
+    """
     match = re.search(r"\[REACT:\s*(.+?)\]", reply_text)
-    if match and message_id:
+    # Determine effective mode: prefer explicit user setting, but treat business chat as secretary
+    mode = None
+    if user_id:
+        mode = memory_db.get("users", {}).get(str(user_id), {}).get("mode")
+    if chat_type == "business":
+        mode = "secretary"
+
+    if match:
         emoji = match.group(1).strip()
-        await set_reaction(chat_id, message_id, emoji)
+        # Only fire a Telegram reaction when NOT in secretary mode and when we have a message_id
+        if message_id and mode != "secretary":
+            await set_reaction(chat_id, message_id, emoji)
+        # Always remove the internal tag from the outgoing text
         reply_text = re.sub(r"\[REACT:\s*(.+?)\]", "", reply_text).strip()
     return reply_text
 
@@ -303,7 +315,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ai_reply = response.text
             add_message_to_history(chat_id, "model", ai_reply)
             
-            ai_reply = await process_ai_reply(ai_reply, chat_id, msg.message_id)
+            ai_reply = await process_ai_reply(ai_reply, chat_id, msg.message_id, chat_type, user_id)
             if ai_reply:
                 await msg.reply_text(ai_reply, parse_mode="Markdown")
         except Exception as e:
@@ -312,7 +324,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await set_typing(chat_id)
         ai_response = await process_with_gemini(prompt, chat_type, chat_id, user_id)
-        ai_response = await process_ai_reply(ai_response, chat_id, msg.message_id)
+        ai_response = await process_ai_reply(ai_response, chat_id, msg.message_id, chat_type, user_id)
         if ai_response:
             await msg.reply_text(ai_response, parse_mode="Markdown")
 
@@ -330,7 +342,7 @@ async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await set_typing(chat_id)
     ai_response = await process_with_gemini(prompt, chat_type, chat_id, user_id)
-    ai_response = await process_ai_reply(ai_response, chat_id, msg.message_id)
+    ai_response = await process_ai_reply(ai_response, chat_id, msg.message_id, chat_type, user_id)
     
     if ai_response:
         await msg.reply_text(ai_response, parse_mode="Markdown")
@@ -403,7 +415,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ai_reply = response.text
         add_message_to_history(chat_id, "model", ai_reply)
         
-        ai_reply = await process_ai_reply(ai_reply, chat_id, message.message_id)
+        ai_reply = await process_ai_reply(ai_reply, chat_id, message.message_id, chat_type, user_id)
         if ai_reply:
             await message.reply_text(ai_reply, parse_mode="Markdown")
     except Exception as e:
@@ -695,7 +707,7 @@ async def webhook_endpoint(request: Request):
                     else:
                         reply = ""
 
-                    reply = await process_ai_reply(reply, chat_id, msg_id)
+                    reply = await process_ai_reply(reply, chat_id, msg_id, "business", user_id)
 
                     if reply:
                         async with httpx.AsyncClient() as client:
