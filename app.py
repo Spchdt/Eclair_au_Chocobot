@@ -124,6 +124,93 @@ async def process_ai_reply(reply_text: str, chat_id: int, message_id: int = None
         reply_text = re.sub(r"\[REACT:\s*(.+?)\]", "", reply_text).strip()
     return reply_text
 
+def describe_attachment_message(message) -> str:
+    if not message:
+        return ""
+
+    if message.photo:
+        return "I just sent you this image."
+    if message.video:
+        return "I just sent you this video clip."
+    if message.voice:
+        return "I just sent you this voice message."
+    if message.audio:
+        audio_name = message.audio.title or message.audio.file_name
+        if audio_name:
+            return f'I just sent you this audio track: "{audio_name}".'
+        return "I just sent you this audio track."
+    if message.document:
+        document_name = message.document.file_name
+        if document_name:
+            return f'I just sent you this document: "{document_name}".'
+        return "I just sent you this document."
+    if message.sticker:
+        sticker = message.sticker
+        label = "I just sent you this sticker"
+        if sticker.emoji:
+            label = f"{label} {sticker.emoji}"
+        qualifiers = []
+        if sticker.is_video:
+            qualifiers.append("video")
+        elif sticker.is_animated:
+            qualifiers.append("animated")
+        if qualifiers:
+            return f"{label} ({', '.join(qualifiers)})."
+        return f"{label}."
+    if message.video_note:
+        return "I just sent you this video note."
+
+    return ""
+
+def describe_attachment_payload(payload: dict) -> str:
+    if not payload:
+        return ""
+
+    if "photo" in payload:
+        return "I just sent you this image."
+    if "video" in payload:
+        return "I just sent you this video clip."
+    if "voice" in payload:
+        return "I just sent you this voice message."
+    if "audio" in payload:
+        audio_name = payload["audio"].get("title") or payload["audio"].get("file_name")
+        if audio_name:
+            return f'I just sent you this audio track: "{audio_name}".'
+        return "I just sent you this audio track."
+    if "document" in payload:
+        document_name = payload["document"].get("file_name")
+        if document_name:
+            return f'I just sent you this document: "{document_name}".'
+        return "I just sent you this document."
+    if "sticker" in payload:
+        sticker = payload["sticker"]
+        label = "I just sent you this sticker"
+        sticker_emoji = sticker.get("emoji")
+        if sticker_emoji:
+            label = f"{label} {sticker_emoji}"
+        qualifiers = []
+        if sticker.get("is_video"):
+            qualifiers.append("video")
+        elif sticker.get("is_animated"):
+            qualifiers.append("animated")
+        if qualifiers:
+            return f"{label} ({', '.join(qualifiers)})."
+        return f"{label}."
+    if "video_note" in payload:
+        return "I just sent you this video note."
+
+    return ""
+
+def merge_attachment_context(base_text: str, attachment_text: str) -> str:
+    base_text = (base_text or "").strip()
+    attachment_text = (attachment_text or "").strip()
+
+    if base_text and attachment_text:
+        return f"{base_text}\n\n[Attachment context: {attachment_text}]"
+    if attachment_text:
+        return attachment_text
+    return base_text
+
 # ---------------------------------------------------------
 # 1.5 MEMORY & HISTORY MANAGEMENT
 # ---------------------------------------------------------
@@ -265,6 +352,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if msg.reply_to_message:
         replied_msg = msg.reply_to_message
         replied_text = replied_msg.text or replied_msg.caption or ""
+        if not replied_text:
+            replied_text = describe_attachment_message(replied_msg)
         if replied_text:
             prompt = f'I am replying to this message: "{replied_text}"\n\nMy response/query: {prompt}'
             
@@ -361,33 +450,26 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.reply_text(wait_msg)
     
     file_id, mime_type = None, ""
-    prompt_text = message.caption if message.caption else ""
+    prompt_text = merge_attachment_context(message.caption, describe_attachment_message(message))
 
     if message.photo:
         file_id, mime_type = message.photo[-1].file_id, "image/jpeg"
-        if not prompt_text: prompt_text = "I just sent you this image. React to it."
     elif message.video:
         file_id, mime_type = message.video.file_id, message.video.mime_type or "video/mp4"
-        if not prompt_text: prompt_text = "I just sent you this video clip. React to it."
     elif message.voice:
         file_id, mime_type = message.voice.file_id, message.voice.mime_type or "audio/ogg"
-        if not prompt_text: prompt_text = "I just sent you this voice message. Reply to it."
     elif message.audio:
         file_id, mime_type = message.audio.file_id, message.audio.mime_type or "audio/mpeg"
-        if not prompt_text: prompt_text = "I just sent you this audio track. React to it."
     elif message.document:
         file_id, mime_type = message.document.file_id, message.document.mime_type
-        if not prompt_text: prompt_text = "I just sent you this document. React to it."
     elif message.sticker:
         file_id = message.sticker.file_id
         if message.sticker.is_video:
             mime_type = "video/webm"
         else:
             mime_type = "image/webp"
-        if not prompt_text: prompt_text = "I just sent you this sticker. React to it."
     elif message.video_note:
         file_id, mime_type = message.video_note.file_id, "video/mp4"
-        if not prompt_text: prompt_text = "I just sent you this video note. React to it."
     else:
         return
 
@@ -493,6 +575,8 @@ async def webhook_endpoint(request: Request):
             if "reply_to_message" in guest_msg:
                 replied_msg = guest_msg["reply_to_message"]
                 replied_text = replied_msg.get("text") or replied_msg.get("caption") or ""
+                if not replied_text:
+                    replied_text = describe_attachment_payload(replied_msg)
                 if replied_text:
                     clean_prompt = f'I am replying to this message: "{replied_text}"\n\nMy response/query: {clean_prompt}'
 
@@ -502,34 +586,27 @@ async def webhook_endpoint(request: Request):
             if "photo" in guest_msg:
                 file_id = guest_msg["photo"][-1]["file_id"]
                 mime_type = "image/jpeg"
-                if not clean_prompt: clean_prompt = "I just sent you this image. React to it."
             elif "video" in guest_msg:
                 file_id = guest_msg["video"]["file_id"]
                 mime_type = guest_msg["video"].get("mime_type", "video/mp4")
-                if not clean_prompt: clean_prompt = "I just sent you this video clip. React to it."
             elif "voice" in guest_msg:
                 file_id = guest_msg["voice"]["file_id"]
                 mime_type = guest_msg["voice"].get("mime_type", "audio/ogg")
-                if not clean_prompt: clean_prompt = "I just sent you this voice message. Reply to it."
             elif "audio" in guest_msg:
                 file_id = guest_msg["audio"]["file_id"]
                 mime_type = guest_msg["audio"].get("mime_type", "audio/mpeg")
-                if not clean_prompt: clean_prompt = "I just sent you this audio track. React to it."
             elif "document" in guest_msg:
                 file_id = guest_msg["document"]["file_id"]
                 mime_type = guest_msg["document"].get("mime_type", "application/octet-stream")
-                if not clean_prompt: clean_prompt = "I just sent you this document. React to it."
             elif "sticker" in guest_msg:
                 file_id = guest_msg["sticker"]["file_id"]
                 if guest_msg["sticker"].get("is_video"):
                     mime_type = "video/webm"
                 else:
                     mime_type = "image/webp"
-                if not clean_prompt: clean_prompt = "I just sent you this sticker. React to it."
             elif "video_note" in guest_msg:
                 file_id = guest_msg["video_note"]["file_id"]
                 mime_type = "video/mp4"
-                if not clean_prompt: clean_prompt = "I just sent you this video note. React to it."
             elif "location" in guest_msg:
                 lat, lon = guest_msg["location"]["latitude"], guest_msg["location"]["longitude"]
                 clean_prompt = f"I pinned a map location at Lat: {lat}, Lon: {lon}. Briefly describe the area."
@@ -554,6 +631,8 @@ async def webhook_endpoint(request: Request):
                 elif "video_note" in replied_msg:
                     file_id = replied_msg["video_note"]["file_id"]
                     mime_type = "video/mp4"
+
+            clean_prompt = merge_attachment_context(clean_prompt, describe_attachment_payload(guest_msg))
             
             if guest_query_id and (clean_prompt or file_id):
                 try:
@@ -645,37 +724,32 @@ async def webhook_endpoint(request: Request):
             if "photo" in bm:
                 file_id = bm["photo"][-1]["file_id"]
                 mime_type = "image/jpeg"
-                if not clean_prompt: clean_prompt = "I just sent you this image."
             elif "video" in bm:
                 file_id = bm["video"]["file_id"]
                 mime_type = bm["video"].get("mime_type", "video/mp4")
-                if not clean_prompt: clean_prompt = "I just sent you this video clip."
             elif "voice" in bm:
                 file_id = bm["voice"]["file_id"]
                 mime_type = bm["voice"].get("mime_type", "audio/ogg")
-                if not clean_prompt: clean_prompt = "I just sent you this voice message."
             elif "audio" in bm:
                 file_id = bm["audio"]["file_id"]
                 mime_type = bm["audio"].get("mime_type", "audio/mpeg")
-                if not clean_prompt: clean_prompt = "I just sent you this audio track."
             elif "document" in bm:
                 file_id = bm["document"]["file_id"]
                 mime_type = bm["document"].get("mime_type", "application/octet-stream")
-                if not clean_prompt: clean_prompt = "I just sent you this document."
             elif "sticker" in bm:
                 file_id = bm["sticker"]["file_id"]
                 if bm["sticker"].get("is_video"):
                     mime_type = "video/webm"
                 else:
                     mime_type = "image/webp"
-                if not clean_prompt: clean_prompt = "I just sent you this sticker."
             elif "video_note" in bm:
                 file_id = bm["video_note"]["file_id"]
                 mime_type = "video/mp4"
-                if not clean_prompt: clean_prompt = "I just sent you this video note (bubble format)."
             elif "location" in bm:
                 lat, lon = bm["location"]["latitude"], bm["location"]["longitude"]
                 clean_prompt = f"I pinned a map location at Lat: {lat}, Lon: {lon}. Briefly describe the area."
+
+            clean_prompt = merge_attachment_context(clean_prompt, describe_attachment_payload(bm))
 
             if conn_id and chat_id and user_id:
                 msg_id = bm.get("message_id")
